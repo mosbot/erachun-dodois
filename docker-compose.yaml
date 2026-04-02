@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  web:
+    build: .
+    container_name: eracun-portal
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - invoice_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - ERACUN_CONFIG=/app/config.yaml
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: eracun-postgres
+    environment:
+      POSTGRES_DB: eracun_portal
+      POSTGRES_USER: eracun
+      POSTGRES_PASSWORD: eracun_secret
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eracun -d eracun_portal"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  invoice_data:

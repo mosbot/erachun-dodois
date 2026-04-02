@@ -1,0 +1,67 @@
+# =============================================
+# eRačun Portal — Configuration
+# =============================================
+
+# moj-eRačun API credentials
+eracun:
+  base_url: "https://www.moj-eracun.hr/apis/v2"
+  # Demo: "https://demo.moj-eracun.hr/apis/v2"
+  username: ""          # Email or ID from MER
+  password: ""          # Login password
+  software_id: ""       # ERP identifier from MER
+  company_id: "52219073449"  # OIB of Orange food business d.o.o.
+  company_bu: ""        # Business Unit (optional)
+
+# Sync settings
+sync:
+  interval_minutes: 30        # How often to check for new invoices
+  lookback_days: 90           # How far back to query on first sync
+  auto_download_pdf: true     # Automatically download PDF attachments
+  auto_download_xml: true     # Automatically download XML source
+
+# Users (passwords are bcrypt hashed)
+# Generate hash: python -c "import bcrypt; print(bcrypt.hashpw(b'password', bcrypt.gensalt()).decode())"
+users:
+  andrey:
+    name: "Andrey Koval"
+    email: "koval.dodo@gmail.com"
+    password: "$2b$12$placeholder_hash_replace_me"
+    role: "admin"
+  # Add more users:
+  # user2:
+  #   name: "User Name"
+  #   email: "user@example.com"
+  #   password: "$2b$12$..."
+  #   role: "viewer"
+
+# Suppliers with Dodois integration enabled
+# Only suppliers listed here will have "Upload to Dodois" option
+dodois_suppliers:
+  metro:
+    name: "METRO Cash & Carry"
+    oib: "38016445738"
+    dodois_supplier_id: "11eeeb8be458f06caf0d5b3908d3a4aa"
+    enabled: true
+
+# Dodois connection (for future Stage 2)
+dodois:
+  base_url: "https://officemanager.dodois.com"
+  # Auth will be via browser cookies initially
+  pizzerias:
+    zagreb-1:
+      name: "Zagreb-1"
+      department_id: "E67B8C27D336AE8311EDE29371DEF8F6"
+      unit_id: "e67b8c27d336ae8611ede2943f258e31"
+    zagreb-2:
+      name: "Zagreb-2"
+      department_id: ""  # TODO: fill in
+      unit_id: ""
+
+# Database
+database:
+  url: "postgresql://eracun:eracun_secret@postgres:5432/eracun_portal"
+
+# Storage
+storage:
+  pdf_dir: "/app/data/pdfs"
+  xml_dir: "/app/data/xmls"
