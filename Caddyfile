@@ -1,0 +1,3 @@
+erachun.dodotool.com {
+    reverse_proxy localhost:8501
+}

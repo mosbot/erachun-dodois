@@ -1,5 +1,5 @@
 # =============================================
-# eRačun Portal — Configuration
+# e-rachun - DodoIs — Configuration
 # =============================================
 
 # moj-eRačun API credentials
@@ -59,7 +59,7 @@ dodois:
 
 # Database
 database:
-  url: "postgresql://eracun:eracun_secret@postgres:5432/eracun_portal"
+  url: "postgresql://eracun:eracun_secret@postgres:5432/e_rachun_dodois"
 
 # Storage
 storage:

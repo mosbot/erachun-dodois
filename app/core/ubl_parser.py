@@ -6,7 +6,7 @@ Extracts key fields from Croatian eRačun XML (HR-CIUS standard).
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional, Union
 from lxml import etree
 
 logger = logging.getLogger(__name__)
@@ -59,13 +59,16 @@ class UBLInvoice:
     payable_amount: float = 0.0
 
     # Line items
-    lines: list[UBLLineItem] = field(default_factory=list)
+    lines: List[UBLLineItem] = field(default_factory=list)
+
+    # Detected delivery pizzeria (zagreb-1 / zagreb-2 / None)
+    delivery_pizzeria: Optional[str] = None
 
     # Raw PDF (base64) if embedded
     embedded_pdf_b64: Optional[str] = None
 
 
-def parse_ubl_xml(xml_content: str | bytes) -> UBLInvoice:
+def parse_ubl_xml(xml_content: Union[str, bytes]) -> UBLInvoice:
     """Parse a UBL 2.1 Invoice XML into structured data."""
     if isinstance(xml_content, str):
         xml_content = xml_content.encode("utf-8")
@@ -77,8 +80,8 @@ def parse_ubl_xml(xml_content: str | bytes) -> UBLInvoice:
     root = etree.fromstring(xml_content)
     inv = UBLInvoice()
 
-    # Invoice number
-    inv.invoice_number = _text(root, ".//cbc:ID") or ""
+    # Invoice number (direct child of root, not deep search)
+    inv.invoice_number = _text(root, "cbc:ID") or ""
 
     # Dates
     inv.issue_date = _parse_date(_text(root, ".//cbc:IssueDate"))
@@ -189,6 +192,9 @@ def parse_ubl_xml(xml_content: str | bytes) -> UBLInvoice:
 
         inv.lines.append(line)
 
+    # Detect delivery pizzeria from delivery info and notes
+    inv.delivery_pizzeria = _detect_pizzeria(root)
+
     # Embedded PDF (AdditionalDocumentReference with mimeCode application/pdf)
     for doc_ref in root.findall(".//cac:AdditionalDocumentReference", NS):
         attach = doc_ref.find(".//cac:Attachment/cbc:EmbeddedDocumentBinaryObject", NS)
@@ -199,6 +205,45 @@ def parse_ubl_xml(xml_content: str | bytes) -> UBLInvoice:
                 break
 
     return inv
+
+
+def _detect_pizzeria(root) -> Optional[str]:
+    """Detect delivery pizzeria from XML delivery info and notes.
+
+    Checks DeliveryParty/Name, DeliveryAddress/StreetName,
+    DeliveryAddress/Line, and cbc:Note for known keywords.
+
+    Rules:
+        TRATINSKA -> zagreb-1
+        MAKSIMIRSKA / MAKSIMIR -> zagreb-2
+    """
+    hints = []
+
+    # DeliveryParty name and address
+    for xpath in [
+        ".//cac:Delivery/cac:DeliveryParty/cac:PartyName/cbc:Name",
+        ".//cac:Delivery/cac:DeliveryLocation/cac:Address/cbc:StreetName",
+        ".//cac:Delivery/cac:DeliveryLocation/cac:Address/cac:AddressLine/cbc:Line",
+        ".//cac:Delivery/cac:DeliveryParty/cac:PostalAddress/cbc:StreetName",
+        ".//cac:Delivery/cac:DeliveryParty/cac:PostalAddress/cac:AddressLine/cbc:Line",
+    ]:
+        el = root.find(xpath, NS)
+        if el is not None and el.text:
+            hints.append(el.text.upper())
+
+    # Note field (used by FRESCO, etc.)
+    for note_el in root.findall("cbc:Note", NS):
+        if note_el.text:
+            hints.append(note_el.text.upper())
+
+    combined = " ".join(hints)
+
+    if "TRATIN" in combined:
+        return "Zagreb-1"
+    if "MAKSIMIR" in combined:
+        return "Zagreb-2"
+
+    return None
 
 
 def _clean_oib(raw: str) -> str:

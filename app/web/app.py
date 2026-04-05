@@ -1,5 +1,5 @@
 """
-eRačun Portal — Streamlit Web UI
+e-rachun - DodoIs — Streamlit Web UI
 Main application with authentication, invoice list, search, PDF viewer.
 """
 
@@ -14,17 +14,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 # Add project root to path
-sys.path.insert(0, "/app")
+PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+sys.path.insert(0, PROJECT_ROOT)
 
 from app.db.models import Invoice, SyncLog, init_db, get_engine, get_session_factory
-from app.core.config_loader import load_config, get_database_url, get_storage_config
+from app.core.config_loader import load_config, get_database_url, get_storage_config, is_dodois_supplier
 from app.core.ubl_parser import parse_ubl_xml
 
 # ============================================================
 # Page config
 # ============================================================
 st.set_page_config(
-    page_title="eRačun Portal",
+    page_title="e-rachun - DodoIs",
     page_icon="📄",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -65,7 +66,7 @@ def authenticate():
     st.markdown(
         """
         <div style="text-align: center; padding: 2rem 0;">
-            <h1>📄 eRačun Portal</h1>
+            <h1>📄 e-rachun - DodoIs</h1>
             <p style="color: #666;">Invoice management for Orange food business d.o.o.</p>
         </div>
         """,
@@ -230,16 +231,20 @@ def render_invoices_page():
         return
 
     # Build DataFrame
+    cfg = get_config()
     data = []
     for inv in invoices:
+        dodois_enabled = is_dodois_supplier(cfg, inv.sender_oib)
         data.append({
             "ID": inv.id,
             "Date": inv.issue_date.strftime("%Y-%m-%d") if inv.issue_date else "-",
             "Supplier": inv.sender_name,
             "Invoice #": inv.invoice_number or inv.document_nr,
-            "Amount (no VAT)": f"€{inv.total_without_vat:,.2f}",
-            "VAT": f"€{inv.total_vat:,.2f}",
-            "Total": f"€{inv.total_with_vat:,.2f}",
+            "Amount (no VAT)": inv.total_without_vat,
+            "VAT": inv.total_vat,
+            "Total": inv.total_with_vat,
+            "Pizzeria": inv.dodois_pizzeria or "—",
+            "Dodois": "✅" if dodois_enabled else "—",
             "Status": inv.processing_status,
             "PDF": "📄" if inv.pdf_path else "-",
             "XML": "📋" if inv.xml_path else "-",
@@ -254,6 +259,11 @@ def render_invoices_page():
         hide_index=True,
         on_select="rerun",
         selection_mode="single-row",
+        column_config={
+            "Amount (no VAT)": st.column_config.NumberColumn(format="€%.2f"),
+            "VAT": st.column_config.NumberColumn(format="€%.2f"),
+            "Total": st.column_config.NumberColumn(format="€%.2f"),
+        },
     )
 
     # ---- Detail / PDF viewer ----
@@ -376,7 +386,7 @@ def render_upload_page():
 
                 # Create invoice
                 invoice = Invoice(
-                    electronic_id=0,
+                    electronic_id=None,
                     document_nr=ubl.invoice_number,
                     sender_oib=ubl.supplier_oib,
                     sender_name=ubl.supplier_name,
@@ -388,6 +398,7 @@ def render_upload_page():
                     total_vat=ubl.total_vat,
                     total_with_vat=ubl.total_with_vat,
                     processing_status="parsed",
+                    dodois_pizzeria=ubl.delivery_pizzeria,
                 )
 
                 # Save XML

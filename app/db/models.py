@@ -1,5 +1,5 @@
 """
-Database models for eRačun Portal.
+Database models for e-rachun - DodoIs.
 """
 
 from datetime import datetime
@@ -20,7 +20,7 @@ class Invoice(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
 
     # eRačun identifiers
-    electronic_id = Column(Integer, unique=True, nullable=False, index=True)
+    electronic_id = Column(Integer, nullable=True, index=True)
     document_nr = Column(String(100), nullable=False)
     document_type_id = Column(Integer, default=1)
     document_type_name = Column(String(50), default="Račun")

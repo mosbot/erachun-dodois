@@ -3,11 +3,12 @@ version: "3.8"
 services:
   web:
     build: .
-    container_name: eracun-portal
+    container_name: e-rachun-dodois
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+      - ./config.local.yaml:/app/config.local.yaml:ro
       - invoice_data:/app/data
     depends_on:
       postgres:
@@ -18,17 +19,17 @@ services:
 
   postgres:
     image: postgres:16-alpine
-    container_name: eracun-postgres
+    container_name: e-rachun-dodois-postgres
     environment:
-      POSTGRES_DB: eracun_portal
+      POSTGRES_DB: e_rachun_dodois
       POSTGRES_USER: eracun
       POSTGRES_PASSWORD: eracun_secret
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    # ports:
+    #   - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U eracun -d eracun_portal"]
+      test: ["CMD-SHELL", "pg_isready -U eracun -d e_rachun_dodois"]
       interval: 5s
       timeout: 5s
       retries: 5

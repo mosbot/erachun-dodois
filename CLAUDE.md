@@ -1,4 +1,4 @@
-# CLAUDE.md — Project Context for eRačun Portal
+# CLAUDE.md — Project Context for e-rachun - DodoIs
 
 ## What is this project
 
@@ -9,7 +9,7 @@ A web portal + Telegram bot for **Orange food business d.o.o.** (OIB: 5221907344
 ## Architecture
 
 ```
-eracun-portal/
+e-rachun-dodois/
 ├── docker-compose.yaml          # PostgreSQL + Streamlit app
 ├── Dockerfile                   # Python 3.12-slim
 ├── config.yaml                  # All settings, users, product mappings

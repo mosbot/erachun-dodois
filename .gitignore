@@ -6,3 +6,7 @@ data/pdfs/
 data/xmls/
 *.db
 .DS_Store
+config.local.yaml
+.mcp.json
+.venv/
+*_signed*.xml
