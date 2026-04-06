@@ -60,12 +60,17 @@ section[data-testid="stSidebar"] {
 section[data-testid="stSidebar"] * {
     color: #E2E8F0 !important;
 }
-section[data-testid="stSidebar"] .stButton > button {
+section[data-testid="stSidebar"] .stButton > button,
+section[data-testid="stSidebar"] .stButton > button *,
+section[data-testid="stSidebar"] .stButton > button p {
     color: #1E3A5F !important;
-    background-color: #E2E8F0;
+    background-color: #E2E8F0 !important;
+    border: none !important;
 }
-section[data-testid="stSidebar"] .stButton > button:hover {
-    background-color: #FFFFFF;
+section[data-testid="stSidebar"] .stButton > button:hover,
+section[data-testid="stSidebar"] .stButton > button:hover *,
+section[data-testid="stSidebar"] .stButton > button:hover p {
+    background-color: #FFFFFF !important;
 }
 section[data-testid="stSidebar"] .stRadio label:hover {
     background-color: rgba(255,255,255,0.08);
@@ -350,7 +355,6 @@ def render_invoices_page():
     for inv in invoices:
         inv_ids.append(inv.id)
         data.append({
-            "\U0001F441": "",
             "Date": inv.issue_date.strftime("%Y-%m-%d") if inv.issue_date else "-",
             "Supplier": inv.sender_name,
             "Invoice #": inv.invoice_number or inv.document_nr,
@@ -362,6 +366,7 @@ def render_invoices_page():
     df = pd.DataFrame(data)
 
     # Interactive table — select row via checkbox to see details below
+    st.caption("\U0001F441 Select a row to preview the invoice")
     event = st.dataframe(
         df,
         use_container_width=True,
@@ -369,7 +374,6 @@ def render_invoices_page():
         on_select="rerun",
         selection_mode="single-row",
         column_config={
-            "\U0001F441": st.column_config.TextColumn(width="small"),
             "Amount (no VAT)": st.column_config.NumberColumn(format="€%.2f"),
             "VAT": st.column_config.NumberColumn(format="€%.2f"),
             "Total": st.column_config.NumberColumn(format="€%.2f"),
