@@ -566,50 +566,42 @@ def render_invoice_detail(inv: Invoice, session):
     col1, col2 = st.columns([1, 2])
 
     with col1:
-        st.subheader(f"Invoice: {inv.invoice_number}")
-        st.markdown(f"""
-        **Supplier:** {inv.sender_name}
-        **OIB:** {inv.sender_oib}
-        **Date:** {inv.issue_date.strftime('%d.%m.%Y') if inv.issue_date else '-'}
-        **Due date:** {inv.due_date.strftime('%d.%m.%Y') if inv.due_date else '-'}
+        st.markdown(f"#### {inv.invoice_number}")
+        st.markdown(
+            f"**{inv.sender_name}** · OIB: `{inv.sender_oib}`  \n"
+            f"📅 {inv.issue_date.strftime('%d.%m.%Y') if inv.issue_date else '—'}"
+            f" &nbsp;·&nbsp; срок: {inv.due_date.strftime('%d.%m.%Y') if inv.due_date else '—'}  \n"
+            f"Без НДС: **€{inv.total_without_vat:,.2f}** &nbsp;·&nbsp; "
+            f"НДС: €{inv.total_vat:,.2f} &nbsp;·&nbsp; "
+            f"**Итого: €{inv.total_with_vat:,.2f}**  \n"
+            f"eRačun ID: {inv.electronic_id or 'Manual'} &nbsp;·&nbsp; `{inv.processing_status}`",
+            unsafe_allow_html=False,
+        )
 
-        **Amount (no VAT):** €{inv.total_without_vat:,.2f}
-        **VAT:** €{inv.total_vat:,.2f}
-        **Total:** €{inv.total_with_vat:,.2f}
-
-        **eRačun ID:** {inv.electronic_id or 'Manual upload'}
-        **Status:** {inv.processing_status}
-        """)
-
-        # Download buttons
+        # Download buttons — side by side
         cfg = get_config()
         storage = get_storage_config(cfg)
 
-        if inv.pdf_path:
-            pdf_full = Path(storage.get("pdf_dir", "/app/data/pdfs")) / inv.pdf_path
-            if pdf_full.exists():
-                st.download_button(
-                    "Download PDF",
-                    data=pdf_full.read_bytes(),
-                    file_name=inv.pdf_path,
-                    mime="application/pdf",
-                    use_container_width=True,
-                )
+        has_pdf = inv.pdf_path and (Path(storage.get("pdf_dir", "/app/data/pdfs")) / inv.pdf_path).exists()
+        has_xml = inv.xml_path and (Path(storage.get("xml_dir", "/app/data/xmls")) / inv.xml_path).exists()
 
-        if inv.xml_path:
-            xml_full = Path(storage.get("xml_dir", "/app/data/xmls")) / inv.xml_path
-            if xml_full.exists():
-                st.download_button(
-                    "Download XML",
-                    data=xml_full.read_bytes(),
-                    file_name=inv.xml_path,
-                    mime="application/xml",
-                    use_container_width=True,
-                )
+        if has_pdf or has_xml:
+            btn_cols = st.columns(2)
+            if has_pdf:
+                pdf_full = Path(storage.get("pdf_dir", "/app/data/pdfs")) / inv.pdf_path
+                with btn_cols[0]:
+                    st.download_button("⬇ PDF", data=pdf_full.read_bytes(),
+                                       file_name=inv.pdf_path, mime="application/pdf",
+                                       use_container_width=True)
+            if has_xml:
+                xml_full = Path(storage.get("xml_dir", "/app/data/xmls")) / inv.xml_path
+                with btn_cols[1]:
+                    st.download_button("⬇ XML", data=xml_full.read_bytes(),
+                                       file_name=inv.xml_path, mime="application/xml",
+                                       use_container_width=True)
 
         # Dodois upload block
-        cfg_for_dodois = get_config()
-        render_dodois_upload_block(inv, session, cfg_for_dodois)
+        render_dodois_upload_block(inv, session, cfg)
 
         # Delete invoice (admin only)
         if st.session_state.get("user_role") == "admin":
