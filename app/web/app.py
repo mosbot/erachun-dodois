@@ -340,7 +340,6 @@ def render_invoices_page():
     cfg = get_config()
     data = []
     for inv in invoices:
-        dodois_enabled = is_dodois_supplier(cfg, inv.sender_oib)
         data.append({
             "ID": inv.id,
             "Date": inv.issue_date.strftime("%Y-%m-%d") if inv.issue_date else "-",
@@ -349,11 +348,6 @@ def render_invoices_page():
             "Amount (no VAT)": inv.total_without_vat,
             "VAT": inv.total_vat,
             "Total": inv.total_with_vat,
-            "Pizzeria": inv.dodois_pizzeria or "—",
-            "Dodois": "Yes" if dodois_enabled else "—",
-            "Status": inv.processing_status,
-            "PDF": "Yes" if inv.pdf_path else "—",
-            "XML": "Yes" if inv.xml_path else "—",
         })
 
     df = pd.DataFrame(data)
