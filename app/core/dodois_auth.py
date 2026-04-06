@@ -3,6 +3,7 @@ Dodois authentication via OIDC (auth.dodois.com).
 Handles username/password + TOTP 2FA login to obtain officemanager session.
 """
 import hashlib
+import html
 import logging
 import re
 import pyotp
@@ -42,89 +43,148 @@ class DodoisSession:
         totp = pyotp.TOTP(self.totp_secret, digest=hashlib.sha256)
         return totp.now()
 
-    def _extract_hidden(self, html: str, name: str) -> Optional[str]:
-        m = re.search(rf'name=["\']?{re.escape(name)}["\']?\s+value=["\']([^"\']+)["\']', html)
+    def _extract_hidden(self, html_text: str, name: str) -> Optional[str]:
+        """Extract single hidden input value by name (HTML-unescaped)."""
+        m = re.search(
+            rf'name=["\']?{re.escape(name)}["\']?\s[^>]*value=["\']([^"\']*)["\']',
+            html_text
+        )
         if not m:
-            m = re.search(rf'value=["\']([^"\']+)["\']\s+name=["\']?{re.escape(name)}["\']?', html)
-        return m.group(1) if m else None
+            m = re.search(
+                rf'value=["\']([^"\']*)["\'][^>]*name=["\']?{re.escape(name)}["\']?',
+                html_text
+            )
+        return html.unescape(m.group(1)) if m else None
+
+    def _extract_all_hidden(self, html: str) -> dict:
+        """Extract all hidden form inputs."""
+        fields = {}
+        for m in re.finditer(r'<input[^>]+>', html, re.IGNORECASE):
+            tag = m.group(0)
+            if 'hidden' not in tag.lower():
+                continue
+            name_m = re.search(r'name=["\']([^"\']+)["\']', tag)
+            val_m = re.search(r'value=["\']([^"\']*)["\']', tag)
+            if name_m:
+                fields[name_m.group(1)] = val_m.group(1) if val_m else ""
+        return fields
+
+    def _submit_auto_form(self, session: requests.Session, html: str) -> requests.Response:
+        """Submit the JS auto-submit hidden form (OIDC redirect forms)."""
+        form_action_m = re.search(r'action=["\']([^"\']+)["\']', html)
+        form_action = form_action_m.group(1) if form_action_m else None
+        if not form_action:
+            raise RuntimeError("No form action found in auto-submit page")
+        hidden_fields = self._extract_all_hidden(html)
+        logger.info(f"Auto-submitting form to: {form_action}")
+        return session.post(form_action, data=hidden_fields, allow_redirects=True, timeout=15)
 
     def _login(self) -> requests.Session:
         session = requests.Session()
         session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (compatible; erachun-dodois/1.0)',
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
         })
 
         logger.info("Logging in to Dodois...")
 
-        # Step 1: Access officemanager → redirect to auth login
+        # Step 1: Access officemanager — returns auto-submit form to auth.dodois.com/connect/authorize
         r = session.get(OFFICEMANAGER_URL + "/OfficeManager/Supply", allow_redirects=True, timeout=15)
-        if "officemanager.dodois.com" in r.url and "authenticate" not in r.url.lower() and "login" not in r.url.lower():
+        logger.info(f"Step1 URL: {r.url}")
+
+        if "auth.dodois.com" not in r.text and "connect/authorize" not in r.text:
             logger.info("Already authenticated")
             return session
 
-        # Step 2: Parse login form
-        html = r.text
-        token = self._extract_hidden(html, "__RequestVerificationToken")
-        return_url = re.search(r'[?&]ReturnUrl=([^&"\']+)', r.url)
-        return_url_val = return_url.group(1) if return_url else ""
+        # Step 2: Submit OIDC authorize form → lands on /login/password
+        r2 = self._submit_auto_form(session, r.text)
+        logger.info(f"Step2 URL: {r2.url}")
 
-        # Also try to find returnUrl in form
-        if not return_url_val:
-            return_url_val = self._extract_hidden(html, "ReturnUrl") or ""
+        # Step 3: POST credentials to /login/password
+        # Fields: Login, Password, ReturnUrl, __RequestVerificationToken
+        csrf = self._extract_hidden(r2.text, "__RequestVerificationToken")
+        return_url = self._extract_hidden(r2.text, "ReturnUrl") or ""
+        login_url = r2.url.split("?")[0]
+        logger.info(f"Step3 POST to: {login_url}, csrf: {bool(csrf)}")
 
-        login_url = f"{AUTH_BASE}/account/login"
-        if "auth.dodois.com" in r.url:
-            login_url = r.url.split("?")[0]
-
-        # Step 3: POST credentials
         payload = {
-            "Input.Username": self.username,
-            "Input.Password": self.password,
-            "Input.RememberLogin": "true",
-            "button": "login",
+            "Login": self.username,
+            "Password": self.password,
+            "ReturnUrl": return_url,
         }
-        if token:
-            payload["__RequestVerificationToken"] = token
-        if return_url_val:
-            payload["Input.ReturnUrl"] = return_url_val
+        if csrf:
+            payload["__RequestVerificationToken"] = csrf
 
-        r2 = session.post(login_url, data=payload, allow_redirects=True, timeout=15)
+        r3 = session.post(login_url, data=payload, allow_redirects=True, timeout=15)
+        logger.info(f"Step3 URL: {r3.url}")
 
-        # Step 4: Check for 2FA page
-        if "loginwith2fa" in r2.url or "TwoFactor" in r2.text or "two" in r2.url.lower():
-            html2 = r2.text
-            token2 = self._extract_hidden(html2, "__RequestVerificationToken")
-            return_url2 = self._extract_hidden(html2, "ReturnUrl") or return_url_val
+        # Step 4: 2FA check
+        needs_2fa = (
+            "loginwith2fa" in r3.url.lower()
+            or "twofactor" in r3.url.lower()
+            or "two-factor" in r3.url.lower()
+            or "TwoFactorCode" in r3.text
+            or "/login/2fa" in r3.url
+            or "/login/totp" in r3.url
+        )
+        logger.info(f"Step4 needs 2FA: {needs_2fa}, URL: {r3.url}")
 
+        if needs_2fa:
+            html2 = r3.text
+            csrf2 = self._extract_hidden(html2, "__RequestVerificationToken")
+            # Form action may be relative — resolve to absolute
+            tfa_action_m = re.search(r'<form[^>]+action=["\']([^"\']+)["\']', html2, re.I)
+            tfa_action = tfa_action_m.group(1) if tfa_action_m else "/mfa/login/totp"
+            if tfa_action.startswith("/"):
+                tfa_action = AUTH_BASE + tfa_action
             totp_code = self._generate_totp()
-            logger.info(f"Submitting TOTP code: {totp_code}")
+            logger.info(f"Submitting TOTP {totp_code} to {tfa_action}")
 
-            tfa_url = r2.url.split("?")[0]
-            payload2 = {
-                "Input.TwoFactorCode": totp_code,
-                "Input.RememberMachine": "true",
-                "button": "login",
-            }
-            if token2:
-                payload2["__RequestVerificationToken"] = token2
-            if return_url2:
-                payload2["Input.ReturnUrl"] = return_url2
+            # POST to the full URL (preserving returnUrl query param) not just form action
+            tfa_post_url = r3.url  # has returnUrl in query string
+            payload2 = {"Code": totp_code}
+            if csrf2:
+                payload2["__RequestVerificationToken"] = csrf2
 
-            r3 = session.post(tfa_url, data=payload2, allow_redirects=True, timeout=15)
-
-            if "officemanager.dodois.com" not in r3.url:
-                # Try alternative field name
-                payload2["TwoFactorCode"] = payload2.pop("Input.TwoFactorCode")
-                r3 = session.post(tfa_url, data=payload2, allow_redirects=True, timeout=15)
-
-            logger.info(f"After 2FA: {r3.url}")
+            r4 = session.post(tfa_post_url, data=payload2, allow_redirects=True, timeout=15)
+            logger.info(f"After 2FA: {r4.url}")
+            final = r4
         else:
-            r3 = r2
+            final = r3
 
-        if "officemanager.dodois.com" in r3.url:
-            logger.info("Login successful")
+        # Step 5: After 2FA we may be at /profile — re-navigate to officemanager.
+        # Session cookies at auth.dodois.com are set, OIDC will complete without re-login.
+        for attempt in range(3):
+            if "officemanager.dodois.com" in final.url:
+                break
+
+            # Handle auto-submit OIDC forms (form_post mode)
+            if ("<form" in final.text and "hidden" in final.text and
+                    ("connect/authorize" in final.text or "signin-oidc" in final.text or
+                     "auth.dodois.com" in final.text)):
+                try:
+                    final = self._submit_auto_form(session, final.text)
+                    logger.info(f"Step5 form-post: {final.url}")
+                    continue
+                except Exception:
+                    pass
+
+            # Re-navigate to officemanager — authenticated session will complete OIDC
+            logger.info(f"Step5 re-navigating to officemanager (attempt {attempt+1})")
+            final = session.get(OFFICEMANAGER_URL + "/OfficeManager/Supply", allow_redirects=True, timeout=15)
+            logger.info(f"Step5 URL: {final.url}")
+
+            # If landed on a new OIDC authorize form, submit it
+            if "connect/authorize" in final.text:
+                try:
+                    final = self._submit_auto_form(session, final.text)
+                    logger.info(f"Step5 OIDC re-auth: {final.url}")
+                except Exception:
+                    break
+
+        if "officemanager.dodois.com" in final.url:
+            logger.info("Login successful!")
         else:
-            logger.warning(f"Login may have failed, ended at: {r3.url}")
+            logger.warning(f"Login may have failed, ended at: {final.url}")
 
         return session
 

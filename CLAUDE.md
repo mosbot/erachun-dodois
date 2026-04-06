@@ -215,7 +215,10 @@ pricePerUnit = round(totalPrice / (qty * containerSize), 2)
 2. **API recalculates pricePerUnit** — it uses totalPrice / (qty × containerSize) internally and validates against what you send
 3. **Container selection matters** — Vindi Sok must use "pcs" (no container), NOT "Package 24 pcs". Using the package container causes price to be divided by 24 twice.
 4. **Duplicate check** — Before creating a supply, check existing supplies by invoice number to avoid duplicates
-5. **Invoice number format** — eRačun uses "2315/11/6005", manual Dodois entry might format it differently as "6/0(011)0005/002315"
+5. **Invoice number format** — eRačun uses "2315/11/6005", manual Dodois entry might format it differently as "6/0(011)0005/002315". Both are accepted by API.
+6. **`vatValue` = actual VAT amount in €**, NOT percentage. Example: 25% VAT on 31.89€ → `vatValue: 7.97` (not 25)
+7. **`commercialInvoiceNumber` and `commercialInvoiceDate` are required** — set equal to `invoiceNumber` / `invoiceDate`
+8. **Supplies list endpoint** — `GET /Accounting/v1/incomingstock/departments/{dept}/supplies?from=YYYY-MM-DD&to=YYYY-MM-DD`
 
 ### Supply POST Payload Structure
 ```json
@@ -224,7 +227,9 @@ pricePerUnit = round(totalPrice / (qty * containerSize), 2)
   "supplierId": "11eeeb8be458f06caf0d5b3908d3a4aa",
   "unitId": "<pizzeria unit_id>",
   "invoiceNumber": "2315/11/6005",
+  "commercialInvoiceNumber": "2315/11/6005",
   "invoiceDate": "2026-03-23",
+  "commercialInvoiceDate": "2026-03-23",
   "receiptDateTime": "2026-03-23T12:00:00",
   "hasVat": true,
   "currencyCode": 978,
@@ -234,7 +239,7 @@ pricePerUnit = round(totalPrice / (qty * containerSize), 2)
       "rawMaterialId": "11eef67e9f071a84b9bf035189a8c3b4",
       "rawMaterialContainerId": "11ef21a9a6d6257646ae4a288c274c30",
       "taxId": "c2f84413b0f6bba911ee2c6a71f95c44",
-      "vatValue": 25,
+      "vatValue": 11.74,
       "totalPriceWithVat": 58.72,
       "totalPriceWithoutVat": 46.98,
       "pricePerUnitWithVat": 7.25,
