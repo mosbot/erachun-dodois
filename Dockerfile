@@ -19,8 +19,7 @@ COPY config.yaml .
 RUN mkdir -p /app/data/pdfs /app/data/xmls
 
 # Streamlit config
-RUN mkdir -p /root/.streamlit
-RUN echo '[server]\nheadless = true\nport = 8501\naddress = "0.0.0.0"\nmaxUploadSize = 50\n\n[browser]\ngatherUsageStats = false\n' > /root/.streamlit/config.toml
+COPY .streamlit/config.toml /root/.streamlit/config.toml
 
 EXPOSE 8501
 
