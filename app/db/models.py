@@ -301,6 +301,35 @@ def get_or_create_supplier_mapping(session, eracun_oib: str, eracun_name: str) -
     return mapping
 
 
+def sync_product_mappings_from_lines(session, supplier_mapping: SupplierMapping, ubl_lines: list) -> int:
+    """Create ProductMapping rows for any new line descriptions seen in an invoice.
+    Returns count of newly created rows.
+    """
+    new_count = 0
+    for line in ubl_lines:
+        desc = (line.item_name or line.description or "").strip()
+        if not desc:
+            continue
+        ean = (line.standard_item_id or "").strip() or None
+        existing = (
+            session.query(ProductMapping)
+            .filter_by(supplier_mapping_id=supplier_mapping.id, eracun_description=desc)
+            .first()
+        )
+        if not existing:
+            session.add(ProductMapping(
+                supplier_mapping_id=supplier_mapping.id,
+                eracun_description=desc,
+                eracun_ean=ean,
+            ))
+            new_count += 1
+        elif ean and not existing.eracun_ean:
+            existing.eracun_ean = ean
+    if new_count:
+        session.commit()
+    return new_count
+
+
 def get_product_mapping(session, supplier_mapping_id: int, description: str, ean: str = None):
     """Find product mapping by EAN (exact) or description (case-insensitive substring)."""
     if ean:

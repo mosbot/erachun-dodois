@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.eracun_client import EracunClient, InboxItem
 from app.core.ubl_parser import parse_ubl_xml
-from app.db.models import Invoice, SyncLog, get_or_create_supplier_mapping
+from app.db.models import Invoice, SyncLog, get_or_create_supplier_mapping, sync_product_mappings_from_lines
 
 logger = logging.getLogger(__name__)
 
@@ -86,14 +86,18 @@ class InvoiceSyncService:
                     continue
 
                 # New invoice — download and process
-                invoice = self._process_new_invoice(item, session)
-                if invoice:
+                result = self._process_new_invoice(item, session)
+                if result:
+                    invoice, ubl_lines = result
                     session.add(invoice)
                     new_count += 1
                     # Ensure supplier mapping row exists (creates unmapped entry if new)
-                    get_or_create_supplier_mapping(
+                    supplier_mapping = get_or_create_supplier_mapping(
                         session, invoice.sender_oib, invoice.sender_name
                     )
+                    # Auto-register product lines as unmapped entries
+                    if ubl_lines:
+                        sync_product_mappings_from_lines(session, supplier_mapping, ubl_lines)
 
             log.invoices_new = new_count
             log.status = "success"
@@ -142,6 +146,7 @@ class InvoiceSyncService:
             )
 
             # Download XML
+            ubl = None
             try:
                 xml_content = self.eracun.receive(item.electronic_id)
                 xml_filename = f"{item.electronic_id}.xml"
@@ -178,8 +183,9 @@ class InvoiceSyncService:
                 )
                 invoice.processing_status = "error"
                 invoice.processing_error = str(e)
+                ubl = None
 
-            return invoice
+            return invoice, (ubl.lines if ubl else [])
 
         except Exception as e:
             logger.error(f"Failed to process {item.electronic_id}: {e}")

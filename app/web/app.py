@@ -21,7 +21,7 @@ from app.db.models import (
     Invoice, SyncLog, DodoisSupplierCatalog, SupplierMapping,
     DodoisRawMaterialCatalog, ProductMapping,
     init_db, get_engine, get_session_factory,
-    get_or_create_supplier_mapping, seed_all,
+    get_or_create_supplier_mapping, sync_product_mappings_from_lines, seed_all,
 )
 from app.core.config_loader import load_config, get_database_url, get_storage_config, is_dodois_supplier
 from app.core.ubl_parser import parse_ubl_xml
@@ -244,7 +244,7 @@ def render_sidebar():
 
         page = st.radio(
             "Navigation",
-            ["Invoices", "Upload XML", "Settings"],
+            ["Invoices", "Upload XML", "Mappings", "Settings"],
             label_visibility="collapsed",
         )
 
@@ -560,8 +560,10 @@ def render_upload_page():
                 session.add(invoice)
                 session.commit()
 
-                # Ensure supplier mapping row exists
-                get_or_create_supplier_mapping(session, ubl.supplier_oib, ubl.supplier_name)
+                # Ensure supplier mapping row exists and auto-register product lines
+                supplier_mapping = get_or_create_supplier_mapping(session, ubl.supplier_oib, ubl.supplier_name)
+                if ubl.lines:
+                    sync_product_mappings_from_lines(session, supplier_mapping, ubl.lines)
 
                 st.success(
                     f"Imported: {ubl.invoice_number} from {ubl.supplier_name} "
@@ -610,11 +612,6 @@ def render_settings_page():
             client.close()
     else:
         st.warning("eRačun credentials not configured in config.yaml")
-
-    st.divider()
-
-    # Supplier mapping
-    render_supplier_mapping_section(cfg)
 
     st.divider()
 
@@ -763,10 +760,8 @@ def render_supplier_mapping_section(cfg: dict):
                 session.commit()
                 st.rerun()
 
-            # Product mapping subsection
             if mapping.dodois_catalog_id is not None:
-                st.divider()
-                render_product_mapping_section(session, mapping)
+                st.info("Supplier linked. Go to the **Products** tab to map invoice lines.")
 
     session.close()
 
@@ -962,6 +957,196 @@ def _sync_dodois_catalog(cfg: dict):
 
 
 # ============================================================
+# Mappings Page
+# ============================================================
+def render_mappings_page():
+    st.title("Mappings")
+
+    if st.session_state.user_role != "admin":
+        st.warning("Admin access required.")
+        return
+
+    tab_sup, tab_prod = st.tabs(["Suppliers", "Products"])
+
+    with tab_sup:
+        cfg = get_config()
+        render_supplier_mapping_section(cfg)
+
+    with tab_prod:
+        render_all_products_tab()
+
+
+def render_all_products_tab():
+    """Products tab: all product mappings across all suppliers, with inline editing."""
+    session = get_db()()
+
+    all_supplier_mappings = (
+        session.query(SupplierMapping)
+        .order_by(SupplierMapping.eracun_name)
+        .all()
+    )
+
+    if not all_supplier_mappings:
+        st.info("No suppliers yet. Import invoices first.")
+        session.close()
+        return
+
+    # Metrics
+    total = session.query(ProductMapping).count()
+    mapped = session.query(ProductMapping).filter(
+        ProductMapping.dodois_raw_material_id.isnot(None)
+    ).count()
+    unmapped = total - mapped
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total products", total)
+    col2.metric("Mapped", mapped)
+    col3.metric("Unmapped", unmapped)
+
+    if total == 0:
+        st.info("No product entries yet. Import invoices — lines will appear here automatically.")
+        session.close()
+        return
+
+    st.divider()
+
+    # Supplier filter
+    sup_options = ["All suppliers"] + [m.eracun_name for m in all_supplier_mappings]
+    sup_filter = st.selectbox("Filter by supplier", sup_options, key="prod_sup_filter")
+
+    # Show only unmapped toggle
+    only_unmapped = st.checkbox("Show only unmapped", key="prod_only_unmapped")
+
+    # Build query
+    q = session.query(ProductMapping)
+    if sup_filter != "All suppliers":
+        sm = next((m for m in all_supplier_mappings if m.eracun_name == sup_filter), None)
+        if sm:
+            q = q.filter_by(supplier_mapping_id=sm.id)
+    if only_unmapped:
+        q = q.filter(ProductMapping.dodois_raw_material_id.is_(None))
+    products = q.order_by(ProductMapping.eracun_description).all()
+
+    if not products:
+        st.info("No products match the current filter.")
+        session.close()
+        return
+
+    # Add product manually
+    with st.expander("Add product mapping manually"):
+        sup_names = [m.eracun_name for m in all_supplier_mappings]
+        man_sup = st.selectbox("Supplier", sup_names, key="man_prod_sup")
+        man_desc = st.text_input("eRačun description", placeholder="Exact or partial text from invoice line", key="man_prod_desc")
+        man_ean = st.text_input("EAN (optional)", placeholder="e.g. 3800023456789", key="man_prod_ean")
+        if st.button("Add", key="man_prod_add"):
+            if man_desc.strip():
+                sm = next((m for m in all_supplier_mappings if m.eracun_name == man_sup), None)
+                if sm:
+                    session.add(ProductMapping(
+                        supplier_mapping_id=sm.id,
+                        eracun_description=man_desc.strip(),
+                        eracun_ean=man_ean.strip() or None,
+                    ))
+                    session.commit()
+                    st.rerun()
+            else:
+                st.warning("Description is required.")
+
+    st.divider()
+
+    # Table
+    product_ids = []
+    rows = []
+    for p in products:
+        product_ids.append(p.id)
+        sup_name = p.supplier_mapping.eracun_name if p.supplier_mapping else "?"
+        mat_name = p.raw_material.dodois_name if p.raw_material else "—"
+        rows.append({
+            "Supplier": sup_name,
+            "eRačun description": p.eracun_description,
+            "EAN": p.eracun_ean or "—",
+            "Dodois material": mat_name,
+            "Active": "Yes" if p.enabled else "No",
+        })
+
+    event = st.dataframe(
+        pd.DataFrame(rows),
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="all_prod_table",
+    )
+
+    if event and event.selection and event.selection.rows:
+        prod_idx = event.selection.rows[0]
+        product = session.query(ProductMapping).get(product_ids[prod_idx])
+
+        if product:
+            st.divider()
+            st.markdown(
+                f"**{product.eracun_description}**  \n"
+                f"Supplier: {product.supplier_mapping.eracun_name if product.supplier_mapping else '?'}"
+            )
+
+            sup_mapping = product.supplier_mapping
+            if not sup_mapping or not sup_mapping.dodois_catalog_id:
+                st.warning("This supplier is not linked to a Dodois supplier yet. Map it in the Suppliers tab first.")
+                if st.button("Delete", key=f"allprod_del_nosup_{product.id}", type="secondary"):
+                    session.delete(product)
+                    session.commit()
+                    st.rerun()
+                session.close()
+                return
+
+            materials = (
+                session.query(DodoisRawMaterialCatalog)
+                .filter_by(supplier_catalog_id=sup_mapping.dodois_catalog_id)
+                .order_by(DodoisRawMaterialCatalog.dodois_name)
+                .all()
+            )
+            mat_options = ["— not linked —"] + [
+                f"{m.dodois_name} ({int(m.container_size)}{_unit_label(m.unit)})"
+                for m in materials
+            ]
+            mat_ids = [None] + [m.id for m in materials]
+
+            current_mat_idx = (
+                mat_ids.index(product.dodois_raw_material_id)
+                if product.dodois_raw_material_id in mat_ids else 0
+            )
+
+            col_mat, col_act = st.columns([5, 1])
+            with col_mat:
+                selected_mat = st.selectbox(
+                    "Dodois raw material",
+                    mat_options,
+                    index=current_mat_idx,
+                    key=f"allprod_mat_{product.id}",
+                )
+            with col_act:
+                st.write("")
+                new_enabled = st.checkbox("Active", value=product.enabled, key=f"allprod_en_{product.id}")
+
+            new_mat_id = mat_ids[mat_options.index(selected_mat)]
+
+            col_save, col_del = st.columns([4, 1])
+            with col_del:
+                if st.button("Delete", key=f"allprod_del_{product.id}", type="secondary"):
+                    session.delete(product)
+                    session.commit()
+                    st.rerun()
+
+            if (new_mat_id != product.dodois_raw_material_id) or (new_enabled != product.enabled):
+                product.dodois_raw_material_id = new_mat_id
+                product.enabled = new_enabled
+                session.commit()
+                st.rerun()
+
+    session.close()
+
+
+# ============================================================
 # Sync function
 # ============================================================
 def sync_invoices():
@@ -1018,6 +1203,8 @@ def main():
         render_invoices_page()
     elif page == "Upload XML":
         render_upload_page()
+    elif page == "Mappings":
+        render_mappings_page()
     elif page == "Settings":
         render_settings_page()
 
