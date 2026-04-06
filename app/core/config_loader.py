@@ -65,9 +65,23 @@ def get_dodois_suppliers(cfg: dict) -> dict:
 
 
 def get_dodois_supplier_by_oib(cfg: dict, oib: str) -> Optional[dict]:
-    """Find a dodois supplier config entry by OIB. Returns None if not found."""
+    """Find a dodois supplier config entry by eRačun OIB. Returns None if not found."""
     for key, supplier in get_dodois_suppliers(cfg).items():
-        if supplier.get("oib") == oib:
+        # Support both old 'oib' field and new 'eracun_oib'
+        if supplier.get("eracun_oib") == oib or supplier.get("oib") == oib:
+            return supplier
+    return None
+
+
+def get_dodois_supplier_by_name(cfg: dict, sender_name: str) -> Optional[dict]:
+    """Find a dodois supplier config entry by eRačun sender name (substring match).
+    Falls back to None if not found."""
+    sender_lower = sender_name.lower()
+    for key, supplier in get_dodois_suppliers(cfg).items():
+        eracun_name = supplier.get("eracun_name", "")
+        if eracun_name and (
+            eracun_name.lower() in sender_lower or sender_lower in eracun_name.lower()
+        ):
             return supplier
     return None
 

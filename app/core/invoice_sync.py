@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.eracun_client import EracunClient, InboxItem
 from app.core.ubl_parser import parse_ubl_xml
-from app.db.models import Invoice, SyncLog
+from app.db.models import Invoice, SyncLog, get_or_create_supplier_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,10 @@ class InvoiceSyncService:
                 if invoice:
                     session.add(invoice)
                     new_count += 1
+                    # Ensure supplier mapping row exists (creates unmapped entry if new)
+                    get_or_create_supplier_mapping(
+                        session, invoice.sender_oib, invoice.sender_name
+                    )
 
             log.invoices_new = new_count
             log.status = "success"

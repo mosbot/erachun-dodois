@@ -17,7 +17,12 @@ from pathlib import Path
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 sys.path.insert(0, PROJECT_ROOT)
 
-from app.db.models import Invoice, SyncLog, init_db, get_engine, get_session_factory
+from app.db.models import (
+    Invoice, SyncLog, DodoisSupplierCatalog, SupplierMapping,
+    DodoisRawMaterialCatalog, ProductMapping,
+    init_db, get_engine, get_session_factory,
+    get_or_create_supplier_mapping, seed_all,
+)
 from app.core.config_loader import load_config, get_database_url, get_storage_config, is_dodois_supplier
 from app.core.ubl_parser import parse_ubl_xml
 
@@ -160,7 +165,14 @@ def get_db():
     cfg = get_config()
     db_url = get_database_url(cfg)
     engine = init_db(db_url)
-    return get_session_factory(engine)
+    session_factory = get_session_factory(engine)
+    # Seed catalog tables from config.yaml on first run
+    session = session_factory()
+    try:
+        seed_all(session, cfg)
+    finally:
+        session.close()
+    return session_factory
 
 
 # ============================================================
@@ -548,6 +560,9 @@ def render_upload_page():
                 session.add(invoice)
                 session.commit()
 
+                # Ensure supplier mapping row exists
+                get_or_create_supplier_mapping(session, ubl.supplier_oib, ubl.supplier_name)
+
                 st.success(
                     f"Imported: {ubl.invoice_number} from {ubl.supplier_name} "
                     f"— €{ubl.total_with_vat:,.2f}"
@@ -598,6 +613,11 @@ def render_settings_page():
 
     st.divider()
 
+    # Supplier mapping
+    render_supplier_mapping_section(cfg)
+
+    st.divider()
+
     # Sync log
     st.subheader("Sync History")
     session = get_db()()
@@ -633,6 +653,312 @@ def render_settings_page():
     st.metric("Total invoices", total)
     st.metric("With PDF", with_pdf)
     session.close()
+
+
+# ============================================================
+# Supplier Mapping section
+# ============================================================
+def render_supplier_mapping_section(cfg: dict):
+    """DB-driven supplier mapping: eRačun suppliers → Dodois suppliers."""
+    col_title, col_btn = st.columns([4, 1])
+    with col_title:
+        st.subheader("Supplier Mapping")
+    with col_btn:
+        if st.button("Sync Dodois Catalog", use_container_width=True):
+            _sync_dodois_catalog(cfg)
+
+    st.caption("Select a row to link a supplier to Dodois and enable upload.")
+
+    session = get_db()()
+
+    # Load all mappings with invoice counts
+    mappings = (
+        session.query(SupplierMapping)
+        .order_by(SupplierMapping.eracun_name)
+        .all()
+    )
+
+    # Invoice counts per OIB
+    from sqlalchemy import func
+    counts = dict(
+        session.query(Invoice.sender_oib, func.count(Invoice.id))
+        .group_by(Invoice.sender_oib)
+        .all()
+    )
+
+    if not mappings:
+        st.info("No suppliers seen yet. Import or sync invoices to populate this list.")
+        session.close()
+        return
+
+    mapping_ids = []
+    rows = []
+    for m in mappings:
+        mapping_ids.append(m.id)
+        dodois_name = m.dodois_supplier.dodois_name if m.dodois_supplier else "—"
+        status_map = {"unmapped": "⚠ Unmapped", "disabled": "Off", "enabled": "On"}
+        rows.append({
+            "Supplier (eRačun)": m.eracun_name,
+            "OIB": m.eracun_oib,
+            "Dodois supplier": dodois_name,
+            "Invoices": counts.get(m.eracun_oib, 0),
+            "Status": status_map.get(m.status, m.status),
+        })
+
+    df = pd.DataFrame(rows)
+    event = st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        column_config={
+            "Invoices": st.column_config.NumberColumn(format="%d"),
+        },
+    )
+
+    if event and event.selection and event.selection.rows:
+        row_idx = event.selection.rows[0]
+        mapping = session.query(SupplierMapping).get(mapping_ids[row_idx])
+
+        if mapping:
+            st.divider()
+            st.markdown(f"**{mapping.eracun_name}** · OIB: `{mapping.eracun_oib}`")
+
+            # Dodois supplier selector
+            catalog_entries = (
+                session.query(DodoisSupplierCatalog)
+                .order_by(DodoisSupplierCatalog.dodois_name)
+                .all()
+            )
+            catalog_options = ["— not linked —"] + [c.dodois_name for c in catalog_entries]
+            catalog_ids = [None] + [c.id for c in catalog_entries]
+
+            current_catalog_idx = (
+                catalog_ids.index(mapping.dodois_catalog_id)
+                if mapping.dodois_catalog_id in catalog_ids else 0
+            )
+
+            selected_catalog_name = st.selectbox(
+                "Dodois supplier",
+                catalog_options,
+                index=current_catalog_idx,
+                key=f"sup_catalog_{mapping.id}",
+            )
+            new_catalog_id = catalog_ids[catalog_options.index(selected_catalog_name)]
+
+            # Enabled toggle
+            new_enabled = st.checkbox(
+                "Enable upload to Dodois",
+                value=mapping.enabled,
+                key=f"sup_enabled_{mapping.id}",
+                disabled=(new_catalog_id is None),
+            )
+
+            # Auto-save on any change
+            changed = (new_catalog_id != mapping.dodois_catalog_id) or (new_enabled != mapping.enabled)
+            if changed:
+                mapping.dodois_catalog_id = new_catalog_id
+                mapping.enabled = new_enabled if new_catalog_id is not None else False
+                session.commit()
+                st.rerun()
+
+            # Product mapping subsection
+            if mapping.dodois_catalog_id is not None:
+                st.divider()
+                render_product_mapping_section(session, mapping)
+
+    session.close()
+
+
+# ============================================================
+# Product Mapping section
+# ============================================================
+def render_product_mapping_section(session, supplier_mapping: SupplierMapping):
+    """Product mapping for a given supplier: eRačun line descriptions → Dodois raw materials."""
+    dodois_name = supplier_mapping.dodois_supplier.dodois_name if supplier_mapping.dodois_supplier else "?"
+    st.subheader(f"Product Mapping — {dodois_name}")
+    st.caption(
+        "Map invoice line items to Dodois raw materials. "
+        "New products appear here automatically when invoices are imported."
+    )
+
+    products = (
+        session.query(ProductMapping)
+        .filter_by(supplier_mapping_id=supplier_mapping.id)
+        .order_by(ProductMapping.eracun_description)
+        .all()
+    )
+
+    # Add new product mapping row
+    with st.expander("Add product mapping"):
+        new_desc = st.text_input(
+            "eRačun description",
+            placeholder="Exact or partial text from invoice line",
+            key=f"new_prod_desc_{supplier_mapping.id}",
+        )
+        new_ean = st.text_input(
+            "EAN (optional)",
+            placeholder="e.g. 3800023456789",
+            key=f"new_prod_ean_{supplier_mapping.id}",
+        )
+        if st.button("Add", key=f"new_prod_add_{supplier_mapping.id}"):
+            if new_desc.strip():
+                session.add(ProductMapping(
+                    supplier_mapping_id=supplier_mapping.id,
+                    eracun_description=new_desc.strip(),
+                    eracun_ean=new_ean.strip() or None,
+                ))
+                session.commit()
+                st.rerun()
+            else:
+                st.warning("Description is required.")
+
+    if not products:
+        st.info("No product mappings yet. Add entries above or import invoices.")
+        return
+
+    product_ids = []
+    prod_rows = []
+    for p in products:
+        product_ids.append(p.id)
+        mat_name = p.raw_material.dodois_name if p.raw_material else "—"
+        prod_rows.append({
+            "eRačun description": p.eracun_description,
+            "EAN": p.eracun_ean or "—",
+            "Dodois material": mat_name,
+            "Active": "Yes" if p.enabled else "No",
+        })
+
+    prod_event = st.dataframe(
+        pd.DataFrame(prod_rows),
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key=f"prod_table_{supplier_mapping.id}",
+    )
+
+    if prod_event and prod_event.selection and prod_event.selection.rows:
+        prod_idx = prod_event.selection.rows[0]
+        product = session.query(ProductMapping).get(product_ids[prod_idx])
+
+        if product:
+            st.markdown(f"**{product.eracun_description}**")
+
+            # Raw material selector (filtered to this supplier's catalog)
+            materials = (
+                session.query(DodoisRawMaterialCatalog)
+                .filter_by(supplier_catalog_id=supplier_mapping.dodois_catalog_id)
+                .order_by(DodoisRawMaterialCatalog.dodois_name)
+                .all()
+            )
+            mat_options = ["— not linked —"] + [
+                f"{m.dodois_name} ({int(m.container_size)}{_unit_label(m.unit)})" for m in materials
+            ]
+            mat_ids = [None] + [m.id for m in materials]
+
+            current_mat_idx = (
+                mat_ids.index(product.dodois_raw_material_id)
+                if product.dodois_raw_material_id in mat_ids else 0
+            )
+
+            selected_mat = st.selectbox(
+                "Dodois raw material",
+                mat_options,
+                index=current_mat_idx,
+                key=f"prod_mat_{product.id}",
+            )
+            new_mat_id = mat_ids[mat_options.index(selected_mat)]
+
+            new_prod_enabled = st.checkbox(
+                "Active",
+                value=product.enabled,
+                key=f"prod_enabled_{product.id}",
+            )
+
+            col_save, col_del = st.columns([3, 1])
+            with col_del:
+                if st.button("Delete", key=f"prod_del_{product.id}", type="secondary"):
+                    session.delete(product)
+                    session.commit()
+                    st.rerun()
+
+            prod_changed = (new_mat_id != product.dodois_raw_material_id) or (new_prod_enabled != product.enabled)
+            if prod_changed:
+                product.dodois_raw_material_id = new_mat_id
+                product.enabled = new_prod_enabled
+                session.commit()
+                st.rerun()
+
+
+def _unit_label(unit: int) -> str:
+    return {1: "pcs", 5: "g", 8: "m"}.get(unit, "?")
+
+
+# ============================================================
+# Dodois catalog sync
+# ============================================================
+def _sync_dodois_catalog(cfg: dict):
+    """Fetch supplier list from Dodois API and update dodois_supplier_catalog table."""
+    import requests
+
+    dodois_cfg = cfg.get("dodois", {})
+    token = dodois_cfg.get("token", "").strip()
+    base_url = dodois_cfg.get("base_url", "https://officemanager.dodois.com")
+
+    if not token:
+        st.error("Dodois token not set. Add `dodois.token` to config.yaml (Bearer token from browser DevTools).")
+        return
+
+    # Use first configured pizzeria department
+    pizzerias = dodois_cfg.get("pizzerias", {})
+    department_id = next(
+        (p.get("department_id") for p in pizzerias.values() if p.get("department_id")),
+        None,
+    )
+    if not department_id:
+        st.error("No department_id configured in dodois.pizzerias.")
+        return
+
+    url = f"{base_url}/Accounting/v1/Suppliers?departmentId={department_id}"
+    try:
+        resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        st.error(f"Dodois API error: {e}")
+        return
+
+    items = data.get("items", [])
+    if not items:
+        st.warning("No suppliers returned from Dodois API.")
+        return
+
+    session = get_db()()
+    now = __import__("datetime").datetime.utcnow()
+    added, updated = 0, 0
+    for s in items:
+        did = s.get("id")
+        if not did:
+            continue
+        entry = session.query(DodoisSupplierCatalog).filter_by(dodois_id=did).first()
+        if entry:
+            entry.dodois_name = s.get("name", entry.dodois_name)
+            entry.dodois_inn = s.get("inn") or entry.dodois_inn
+            entry.synced_at = now
+            updated += 1
+        else:
+            session.add(DodoisSupplierCatalog(
+                dodois_id=did,
+                dodois_name=s.get("name", did),
+                dodois_inn=s.get("inn") or None,
+                synced_at=now,
+            ))
+            added += 1
+    session.commit()
+    session.close()
+    st.success(f"Dodois catalog updated: {added} added, {updated} updated.")
 
 
 # ============================================================

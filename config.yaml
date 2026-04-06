@@ -36,17 +36,170 @@ users:
 
 # Suppliers with Dodois integration enabled
 # Only suppliers listed here will have "Upload to Dodois" option
+#
+# Fields:
+#   eracun_name      — exact SenderBusinessName from moj-eRačun (used for matching in DB)
+#   eracun_oib       — OIB of the supplier in eRačun (primary match key)
+#   dodois_name      — supplier name as it appears in Dodois UI (for reference)
+#   dodois_supplier_id — supplier GUID in Dodois API
+#   enabled          — set to false to disable upload without removing the entry
 dodois_suppliers:
+  # ── Enabled ──────────────────────────────────────────────────────────────
   metro:
-    name: "METRO Cash & Carry"
-    oib: "38016445738"
+    eracun_name: "METRO Cash & Carry, d.o.o."
+    eracun_oib: "38016445738"
+    dodois_name: "METRO"
     dodois_supplier_id: "11eeeb8be458f06caf0d5b3908d3a4aa"
     enabled: true
 
-# Dodois connection (for future Stage 2)
+  # ── Disabled (known OIB — can enable when eRačun invoices arrive) ────────
+  granolio:
+    eracun_name: ""             # TODO: find exact SenderBusinessName in eRačun
+    eracun_oib: "59064993527"
+    dodois_name: "Granolio"
+    dodois_supplier_id: "11eec01b091a8755b46f7e2e62330791"
+    enabled: false
+
+  stanic:
+    eracun_name: ""
+    eracun_oib: "5006415529"
+    dodois_name: "Stanic"
+    dodois_supplier_id: "11eec01dde0d0bfd915b9cc6824302ea"
+    enabled: false
+
+  albi:
+    eracun_name: ""
+    eracun_oib: "74376972925"
+    dodois_name: "ALBI"
+    dodois_supplier_id: "11eec0e60fdc9ffc9b64ef423f2c3899"
+    enabled: false
+
+  ro_mark:
+    eracun_name: ""
+    eracun_oib: "93244812148"
+    dodois_name: "Ro Mark"
+    dodois_supplier_id: "11eec1c4042fc011ac60baab43cdb48c"
+    enabled: false
+
+  fresco:
+    eracun_name: ""
+    eracun_oib: "18311048687"
+    dodois_name: "Fresco"
+    dodois_supplier_id: "11eff5b5b9a79b54bde8b6fd3674ca88"
+    enabled: false
+
+  interspar:
+    eracun_name: ""
+    eracun_oib: "46108893754"
+    dodois_name: "Interspar"
+    dodois_supplier_id: "11ef15f0d49f7cc982bd36c272881012"
+    enabled: false
+
+  lidl:
+    eracun_name: ""
+    eracun_oib: "66089976432"
+    dodois_name: "Lidl"
+    dodois_supplier_id: "11ef15f05462df7ca855728a1995d0b4"
+    enabled: false
+
+  makromikro:
+    eracun_name: ""
+    eracun_oib: "50467974870"
+    dodois_name: "MAKROMIKRO GRUPA"
+    dodois_supplier_id: "11ef6514b2dd6206873aeee28376b190"
+    enabled: false
+
+  kristy:
+    eracun_name: ""
+    eracun_oib: "49168179804"
+    dodois_name: "Kristy"
+    dodois_supplier_id: "11f0f2dea153a4aa9a9f4cc027ced33a"
+    enabled: false
+
+  pivac:
+    eracun_name: ""
+    eracun_oib: "28128148322"
+    dodois_name: "PIVAC"
+    dodois_supplier_id: "11f10e7e4945bd6c8a79b5471dd03c96"
+    enabled: false
+
+  vrutak:
+    eracun_name: ""
+    eracun_oib: "95092888930"
+    dodois_name: "Vrutak"
+    dodois_supplier_id: "11f05f3130a68f6ba8b83ace08f406c5"
+    enabled: false
+
+  volim_ljuto:
+    eracun_name: ""
+    eracun_oib: "43285636325"
+    dodois_name: "VOLIM LJUTO"
+    dodois_supplier_id: "11ef5667290ff85bac616fad25d11eb3"
+    enabled: false
+
+  # ── Disabled (no OIB in Dodois — fill eracun_oib when known) ─────────────
+  decentia:
+    eracun_name: ""
+    eracun_oib: ""
+    dodois_name: "Decentia"
+    dodois_supplier_id: "11ef2e27e2160faeb31eca27f7cacac9"
+    enabled: false
+
+  drinks_hr:
+    eracun_name: ""
+    eracun_oib: ""
+    dodois_name: "Drinks.hr"
+    dodois_supplier_id: "11f05b5e14f1d1e2b157f46ac3adce2f"
+    enabled: false
+
+  mocafino:
+    eracun_name: ""
+    eracun_oib: ""
+    dodois_name: "Mocafino / Najkava"
+    dodois_supplier_id: "11ef66b01efaf28ca8409de4af6f6ca9"
+    enabled: false
+
+  pago:
+    eracun_name: ""
+    eracun_oib: ""
+    dodois_name: "PAGO CROATIA"
+    dodois_supplier_id: "11ef92be6fcbce48ab31820779b8e808"
+    enabled: false
+
+  pecjak:
+    eracun_name: ""
+    eracun_oib: ""
+    dodois_name: "Pečjak"
+    dodois_supplier_id: "11f00a2cd23aaa218dc924d7f65cc5a9"
+    enabled: false
+
+  premium_distribucija:
+    eracun_name: ""
+    eracun_oib: ""
+    dodois_name: "Premium distribucija"
+    dodois_supplier_id: "11ef6b5791159cc7805fab160dec018d"
+    enabled: false
+
+  spekter:
+    eracun_name: ""
+    eracun_oib: ""
+    dodois_name: "Spekter/Zlatiborac"
+    dodois_supplier_id: "11f01f6dad61734c8c66440a725f3728"
+    enabled: false
+
+  studenac:
+    eracun_name: ""
+    eracun_oib: ""
+    dodois_name: "Studenac"
+    dodois_supplier_id: "11ef62b027855354bee56f469c285247"
+    enabled: false
+
+# Dodois connection
 dodois:
   base_url: "https://officemanager.dodois.com"
-  # Auth will be via browser cookies initially
+  # Bearer token for API calls (Settings → "Sync Dodois Catalog").
+  # Get it from browser DevTools: open Dodois, F12 → Network → any request → Authorization header.
+  token: ""
   pizzerias:
     zagreb-1:
       name: "Zagreb-1"
