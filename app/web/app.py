@@ -179,40 +179,44 @@ def authenticate():
     cfg = get_config()
     users = cfg.get("users", {})
 
-    st.markdown(
-        """
-        <div class="login-card">
-            <div class="login-header">
-                <h1>eRačun Portal</h1>
-                <p>Invoice management for Orange food business d.o.o.</p>
+    login_container = st.empty()
+
+    with login_container.container():
+        st.markdown(
+            """
+            <div class="login-card">
+                <div class="login-header">
+                    <h1>eRačun Portal</h1>
+                    <p>Invoice management for Orange food business d.o.o.</p>
+                </div>
             </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+            """,
+            unsafe_allow_html=True,
+        )
 
-    col1, col2, col3 = st.columns([1, 1, 1])
-    with col2:
-        with st.form("login_form"):
-            username = st.text_input("Username", placeholder="Enter username")
-            password = st.text_input("Password", type="password", placeholder="Enter password")
-            submit = st.form_submit_button("Sign in", use_container_width=True)
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            with st.form("login_form"):
+                username = st.text_input("Username", placeholder="Enter username")
+                password = st.text_input("Password", type="password", placeholder="Enter password")
+                submit = st.form_submit_button("Sign in", use_container_width=True)
 
-            if submit:
-                if username in users:
-                    stored_hash = users[username].get("password", "")
-                    if bcrypt.checkpw(
-                        password.encode("utf-8"), stored_hash.encode("utf-8")
-                    ):
-                        st.session_state.authenticated = True
-                        st.session_state.username = username
-                        st.session_state.user_role = users[username].get("role", "viewer")
-                        st.session_state.user_name = users[username].get("name", username)
-                        st.rerun()
+                if submit:
+                    if username in users:
+                        stored_hash = users[username].get("password", "")
+                        if bcrypt.checkpw(
+                            password.encode("utf-8"), stored_hash.encode("utf-8")
+                        ):
+                            st.session_state.authenticated = True
+                            st.session_state.username = username
+                            st.session_state.user_role = users[username].get("role", "viewer")
+                            st.session_state.user_name = users[username].get("name", username)
+                            login_container.empty()
+                            st.rerun()
+                        else:
+                            st.error("Invalid password")
                     else:
-                        st.error("Invalid password")
-                else:
-                    st.error("User not found")
+                        st.error("User not found")
 
     return False
 
