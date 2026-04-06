@@ -277,6 +277,20 @@ def render_sidebar():
 
 
 # ============================================================
+# Dodois status helper
+# ============================================================
+def _dodois_status_label(inv: Invoice, enabled_oibs: set) -> str:
+    """Return short status string for the Dodois column in the invoice table."""
+    if inv.sender_oib not in enabled_oibs:
+        return "—"
+    if inv.dodois_supply_id:
+        return "✓ Загружен"
+    if inv.processing_status == "error":
+        return "✗ Ошибка"
+    return "· Не загружен"
+
+
+# ============================================================
 # Invoice List Page
 # ============================================================
 def render_invoices_page():
@@ -353,6 +367,12 @@ def render_invoices_page():
 
     # Build DataFrame
     cfg = get_config()
+    enabled_oibs = set(
+        r[0] for r in
+        session.query(SupplierMapping.eracun_oib)
+        .filter(SupplierMapping.enabled == True, SupplierMapping.dodois_catalog_id.isnot(None))
+        .all()
+    )
     inv_ids = []
     data = []
     for inv in invoices:
@@ -365,6 +385,7 @@ def render_invoices_page():
             "VAT": inv.total_vat,
             "Total": inv.total_with_vat,
             "Pizzeria": inv.dodois_pizzeria or "—",
+            "Dodois": _dodois_status_label(inv, enabled_oibs),
         })
 
     df = pd.DataFrame(data)
@@ -381,6 +402,7 @@ def render_invoices_page():
             "Amount (no VAT)": st.column_config.NumberColumn(format="€%.2f"),
             "VAT": st.column_config.NumberColumn(format="€%.2f"),
             "Total": st.column_config.NumberColumn(format="€%.2f"),
+            "Dodois": st.column_config.TextColumn(width="small"),
         },
     )
 
