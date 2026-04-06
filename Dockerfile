@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # App code
 COPY app/ ./app/
+COPY scripts/ ./scripts/
 COPY config.yaml .
 
 # Data directories
