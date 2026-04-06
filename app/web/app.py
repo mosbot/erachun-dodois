@@ -362,6 +362,7 @@ def render_invoices_page():
             "Amount (no VAT)": inv.total_without_vat,
             "VAT": inv.total_vat,
             "Total": inv.total_with_vat,
+            "Pizzeria": inv.dodois_pizzeria or "—",
         })
 
     df = pd.DataFrame(data)
