@@ -166,6 +166,27 @@ def get_db():
 # ============================================================
 # Authentication
 # ============================================================
+def _do_login():
+    """Callback: runs BEFORE widget rendering on rerun, preventing form flash."""
+    cfg = get_config()
+    users = cfg.get("users", {})
+    username = st.session_state.get("_login_user", "")
+    password = st.session_state.get("_login_pass", "")
+
+    if username in users:
+        stored_hash = users[username].get("password", "")
+        if bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8")):
+            st.session_state.authenticated = True
+            st.session_state.username = username
+            st.session_state.user_role = users[username].get("role", "viewer")
+            st.session_state.user_name = users[username].get("name", username)
+            st.session_state._login_error = None
+        else:
+            st.session_state._login_error = "Invalid password"
+    else:
+        st.session_state._login_error = "User not found"
+
+
 def authenticate():
     """Simple authentication using config.yaml users."""
     if "authenticated" not in st.session_state:
@@ -176,47 +197,26 @@ def authenticate():
     if st.session_state.authenticated:
         return True
 
-    cfg = get_config()
-    users = cfg.get("users", {})
-
-    login_container = st.empty()
-
-    with login_container.container():
-        st.markdown(
-            """
-            <div class="login-card">
-                <div class="login-header">
-                    <h1>eRačun Portal</h1>
-                    <p>Invoice management for Orange food business d.o.o.</p>
-                </div>
+    st.markdown(
+        """
+        <div class="login-card">
+            <div class="login-header">
+                <h1>eRačun Portal</h1>
+                <p>Invoice management for Orange food business d.o.o.</p>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-        col1, col2, col3 = st.columns([1, 1, 1])
-        with col2:
-            with st.form("login_form"):
-                username = st.text_input("Username", placeholder="Enter username")
-                password = st.text_input("Password", type="password", placeholder="Enter password")
-                submit = st.form_submit_button("Sign in", use_container_width=True)
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        st.text_input("Username", placeholder="Enter username", key="_login_user")
+        st.text_input("Password", type="password", placeholder="Enter password", key="_login_pass")
+        st.button("Sign in", use_container_width=True, on_click=_do_login)
 
-                if submit:
-                    if username in users:
-                        stored_hash = users[username].get("password", "")
-                        if bcrypt.checkpw(
-                            password.encode("utf-8"), stored_hash.encode("utf-8")
-                        ):
-                            st.session_state.authenticated = True
-                            st.session_state.username = username
-                            st.session_state.user_role = users[username].get("role", "viewer")
-                            st.session_state.user_name = users[username].get("name", username)
-                            login_container.empty()
-                            st.rerun()
-                        else:
-                            st.error("Invalid password")
-                    else:
-                        st.error("User not found")
+        if st.session_state.get("_login_error"):
+            st.error(st.session_state._login_error)
 
     return False
 
