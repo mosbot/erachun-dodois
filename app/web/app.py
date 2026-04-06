@@ -336,12 +336,26 @@ def render_invoices_page():
         session.close()
         return
 
-    # Build DataFrame (ID stored separately, not shown)
+    # Build invoice options for selector
     cfg = get_config()
-    inv_ids = []
+    invoice_options = {}
+    for inv in invoices:
+        date_str = inv.issue_date.strftime("%Y-%m-%d") if inv.issue_date else "-"
+        inv_num = inv.invoice_number or inv.document_nr or "-"
+        label = f"{date_str}  |  {inv.sender_name}  |  {inv_num}  |  €{inv.total_with_vat:,.2f}"
+        invoice_options[label] = inv.id
+
+    # Invoice selector
+    selected_label = st.selectbox(
+        "Select invoice to preview",
+        options=list(invoice_options.keys()),
+        index=None,
+        placeholder="Choose an invoice...",
+    )
+
+    # Summary table (read-only)
     data = []
     for inv in invoices:
-        inv_ids.append(inv.id)
         data.append({
             "Date": inv.issue_date.strftime("%Y-%m-%d") if inv.issue_date else "-",
             "Supplier": inv.sender_name,
@@ -353,15 +367,10 @@ def render_invoices_page():
 
     df = pd.DataFrame(data)
 
-    st.caption("Click on a row to view invoice details and PDF")
-
-    # Interactive table — row selection
-    event = st.dataframe(
+    st.dataframe(
         df,
         use_container_width=True,
         hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
         column_config={
             "Amount (no VAT)": st.column_config.NumberColumn(format="€%.2f"),
             "VAT": st.column_config.NumberColumn(format="€%.2f"),
@@ -370,9 +379,8 @@ def render_invoices_page():
     )
 
     # ---- Detail / PDF viewer ----
-    if event and event.selection and event.selection.rows:
-        row_idx = event.selection.rows[0]
-        inv_id = inv_ids[row_idx]
+    if selected_label:
+        inv_id = invoice_options[selected_label]
         inv = session.query(Invoice).get(inv_id)
 
         if inv:
