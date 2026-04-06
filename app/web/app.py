@@ -264,32 +264,31 @@ def render_sidebar():
 # Invoice List Page
 # ============================================================
 def render_invoices_page():
-    st.title("Incoming Invoices")
-
     session = get_db()()
 
-    # ---- Filters ----
-    col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
+    # ---- Filters (compact single row) ----
+    suppliers = [
+        r[0]
+        for r in session.query(Invoice.sender_name)
+        .distinct()
+        .order_by(Invoice.sender_name)
+        .all()
+    ]
 
-    with col1:
+    f1, f2, f3 = st.columns([3, 2, 2])
+    with f1:
         search_text = st.text_input(
             "Search",
-            placeholder="Supplier name or invoice number...",
+            placeholder="Supplier or invoice #...",
+            label_visibility="collapsed",
         )
-    with col2:
-        # Get unique supplier names
-        suppliers = [
-            r[0]
-            for r in session.query(Invoice.sender_name)
-            .distinct()
-            .order_by(Invoice.sender_name)
-            .all()
-        ]
+    with f2:
         supplier_filter = st.selectbox(
             "Supplier",
-            ["All"] + suppliers,
+            ["All suppliers"] + suppliers,
+            label_visibility="collapsed",
         )
-    with col3:
+    with f3:
         date_range = st.date_input(
             "Date range",
             value=(
@@ -297,14 +296,7 @@ def render_invoices_page():
                 datetime.now(),
             ),
             format="DD.MM.YYYY",
-        )
-    with col4:
-        amount_range = st.slider(
-            "Amount (EUR)",
-            min_value=0.0,
-            max_value=10000.0,
-            value=(0.0, 10000.0),
-            step=10.0,
+            label_visibility="collapsed",
         )
 
     # ---- Query ----
@@ -318,7 +310,7 @@ def render_invoices_page():
             | (Invoice.document_nr.ilike(search_pattern))
         )
 
-    if supplier_filter != "All":
+    if supplier_filter != "All suppliers":
         query = query.filter(Invoice.sender_name == supplier_filter)
 
     if isinstance(date_range, tuple) and len(date_range) == 2:
@@ -327,21 +319,15 @@ def render_invoices_page():
             Invoice.issue_date <= datetime.combine(date_range[1], datetime.max.time()),
         )
 
-    query = query.filter(
-        Invoice.total_with_vat >= amount_range[0],
-        Invoice.total_with_vat <= amount_range[1],
-    )
-
     invoices = query.order_by(Invoice.issue_date.desc()).all()
 
-    # ---- Summary ----
+    # ---- Summary (compact inline) ----
     total_amount = sum(i.total_with_vat for i in invoices)
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Invoices", len(invoices))
-    col2.metric("Total (with VAT)", f"€{total_amount:,.2f}")
-    col3.metric("Suppliers", len(set(i.sender_name for i in invoices)))
-
-    st.divider()
+    n_suppliers = len(set(i.sender_name for i in invoices))
+    st.markdown(
+        f"**{len(invoices)}** invoices &nbsp;/&nbsp; **{n_suppliers}** suppliers "
+        f"&nbsp;/&nbsp; Total: **€{total_amount:,.2f}**",
+    )
 
     # ---- Table ----
     if not invoices:
