@@ -936,65 +936,139 @@ def _unit_label(unit: int) -> str:
 # Dodois catalog sync
 # ============================================================
 def _sync_dodois_catalog(cfg: dict):
-    """Fetch supplier list from Dodois API and update dodois_supplier_catalog table."""
-    import requests
+    """Login to Dodois, fetch all suppliers + raw materials, update DB catalog tables."""
+    from app.core.dodois_auth import DodoisSession
+    from app.core.dodois_client import DodoisClient
+    from datetime import datetime as _dt
 
     dodois_cfg = cfg.get("dodois", {})
-    token = dodois_cfg.get("token", "").strip()
-    base_url = dodois_cfg.get("base_url", "https://officemanager.dodois.com")
+    username = dodois_cfg.get("username", "").strip()
+    password = dodois_cfg.get("password", "").strip()
+    totp_secret = dodois_cfg.get("totp_secret", "").strip()
 
-    if not token:
-        st.error("Dodois token not set. Add `dodois.token` to config.yaml (Bearer token from browser DevTools).")
+    if not username or not password:
+        st.error("Dodois credentials not set. Add `dodois.username` and `dodois.password` to config.yaml.")
         return
 
-    # Use first configured pizzeria department
-    pizzerias = dodois_cfg.get("pizzerias", {})
-    department_id = next(
-        (p.get("department_id") for p in pizzerias.values() if p.get("department_id")),
-        None,
-    )
-    if not department_id:
-        st.error("No department_id configured in dodois.pizzerias.")
-        return
+    with st.spinner("Logging in to Dodois..."):
+        try:
+            ds = DodoisSession(username, password, totp_secret)
+            client = DodoisClient(ds)
+            suppliers = client.get_suppliers()
+        except Exception as e:
+            st.error(f"Dodois login/fetch failed: {e}")
+            return
 
-    url = f"{base_url}/Accounting/v1/Suppliers?departmentId={department_id}"
-    try:
-        resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        st.error(f"Dodois API error: {e}")
-        return
-
-    items = data.get("items", [])
-    if not items:
+    if not suppliers:
         st.warning("No suppliers returned from Dodois API.")
         return
 
     session = get_db()()
-    now = __import__("datetime").datetime.utcnow()
-    added, updated = 0, 0
-    for s in items:
+    now = _dt.utcnow()
+    sup_added = sup_updated = mat_added = mat_updated = 0
+
+    progress = st.progress(0, text="Syncing suppliers...")
+    for i, s in enumerate(suppliers):
         did = s.get("id")
         if not did:
             continue
+
+        # Upsert supplier catalog
         entry = session.query(DodoisSupplierCatalog).filter_by(dodois_id=did).first()
         if entry:
             entry.dodois_name = s.get("name", entry.dodois_name)
             entry.dodois_inn = s.get("inn") or entry.dodois_inn
             entry.synced_at = now
-            updated += 1
+            sup_updated += 1
         else:
-            session.add(DodoisSupplierCatalog(
+            entry = DodoisSupplierCatalog(
                 dodois_id=did,
                 dodois_name=s.get("name", did),
                 dodois_inn=s.get("inn") or None,
                 synced_at=now,
-            ))
-            added += 1
+            )
+            session.add(entry)
+            session.flush()
+            sup_added += 1
+
+        # Fetch raw materials for this supplier
+        try:
+            materials = client.get_raw_materials(did)
+        except Exception:
+            materials = []
+
+        for mat in materials:
+            unit = mat.get("unit", 1)
+            type_name = mat.get("typeName") or mat.get("name", "")
+            containers = mat.get("containers", [])
+
+            if not containers:
+                existing = session.query(DodoisRawMaterialCatalog).filter_by(
+                    supplier_catalog_id=entry.id,
+                    dodois_material_id=mat["id"],
+                    dodois_container_id=None,
+                ).first()
+                if existing:
+                    existing.dodois_name = type_name
+                    existing.unit = unit
+                    existing.container_size = 1.0
+                    existing.synced_at = now
+                    mat_updated += 1
+                else:
+                    session.add(DodoisRawMaterialCatalog(
+                        supplier_catalog_id=entry.id,
+                        dodois_material_id=mat["id"],
+                        dodois_container_id=None,
+                        dodois_name=type_name,
+                        unit=unit,
+                        container_size=1.0,
+                        synced_at=now,
+                    ))
+                    mat_added += 1
+            else:
+                for cont in containers:
+                    size = cont.get("size") or 1.0
+                    unit_label = {5: "g", 8: "m"}.get(unit, "pcs")
+                    if unit == 5:
+                        size_str = f"{int(size)}g" if size < 1000 else f"{size/1000:g}kg"
+                    elif unit == 8:
+                        size_str = f"{size}m"
+                    else:
+                        size_str = f"{int(size)}pcs"
+                    display_name = f"{type_name} ({size_str})"
+
+                    existing = session.query(DodoisRawMaterialCatalog).filter_by(
+                        supplier_catalog_id=entry.id,
+                        dodois_material_id=mat["id"],
+                        dodois_container_id=cont["id"],
+                    ).first()
+                    if existing:
+                        existing.dodois_name = display_name
+                        existing.unit = unit
+                        existing.container_size = float(size)
+                        existing.synced_at = now
+                        mat_updated += 1
+                    else:
+                        session.add(DodoisRawMaterialCatalog(
+                            supplier_catalog_id=entry.id,
+                            dodois_material_id=mat["id"],
+                            dodois_container_id=cont["id"],
+                            dodois_name=display_name,
+                            unit=unit,
+                            container_size=float(size),
+                            synced_at=now,
+                        ))
+                        mat_added += 1
+
+        progress.progress((i + 1) / len(suppliers), text=f"Synced {i+1}/{len(suppliers)} suppliers...")
+
     session.commit()
     session.close()
-    st.success(f"Dodois catalog updated: {added} added, {updated} updated.")
+    progress.empty()
+    st.success(
+        f"Dodois catalog synced: {sup_added} suppliers added, {sup_updated} updated | "
+        f"{mat_added} materials added, {mat_updated} updated."
+    )
 
 
 # ============================================================

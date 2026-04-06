@@ -197,9 +197,10 @@ dodois_suppliers:
 # Dodois connection
 dodois:
   base_url: "https://officemanager.dodois.com"
-  # Bearer token for API calls (Settings → "Sync Dodois Catalog").
-  # Get it from browser DevTools: open Dodois, F12 → Network → any request → Authorization header.
-  token: ""
+  # Auto-login credentials (replaces manual Bearer token)
+  username: ""        # Dodois login (e.g. dodotool)
+  password: ""        # Dodois password
+  totp_secret: ""     # TOTP secret from authenticator app URI (&secret=...)
   pizzerias:
     zagreb-1:
       name: "Zagreb-1"
