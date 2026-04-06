@@ -336,80 +336,43 @@ def render_invoices_page():
         session.close()
         return
 
-    # Clickable invoice rows
+    # Build DataFrame
     cfg = get_config()
-
-    if "selected_invoice_id" not in st.session_state:
-        st.session_state.selected_invoice_id = None
-
-    # CSS for row styling
-    st.markdown("""
-    <style>
-    div[data-testid="stHorizontalBlock"]:has(> div > div > .stButton) {
-        padding: 0 !important;
-        margin: 0 !important;
-    }
-    div[data-testid="stHorizontalBlock"]:has(> div > div > .stButton) button {
-        border: none !important;
-        background: transparent !important;
-        text-align: left !important;
-        padding: 8px 12px !important;
-        border-radius: 0 !important;
-        color: #0F172A !important;
-        font-weight: 400 !important;
-        width: 100% !important;
-    }
-    div[data-testid="stHorizontalBlock"]:has(> div > div > .stButton):hover button {
-        background: #EFF6FF !important;
-    }
-    .inv-header {
-        display: flex;
-        padding: 8px 12px;
-        border-bottom: 2px solid #E2E8F0;
-        font-weight: 600;
-        font-size: 0.8rem;
-        color: #64748B;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-    }
-    .inv-row-border {
-        border-bottom: 1px solid #F1F5F9;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-    # Table header
-    st.markdown("""
-    <div class="inv-header">
-        <span style="flex:1.2">Date</span>
-        <span style="flex:2.5">Supplier</span>
-        <span style="flex:2">Invoice #</span>
-        <span style="flex:1.3;text-align:right">No VAT</span>
-        <span style="flex:1;text-align:right">VAT</span>
-        <span style="flex:1.3;text-align:right">Total</span>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Render each invoice as a clickable row
+    inv_ids = []
+    data = []
     for inv in invoices:
-        date_str = inv.issue_date.strftime("%Y-%m-%d") if inv.issue_date else "-"
-        inv_num = inv.invoice_number or inv.document_nr or "-"
-        is_selected = st.session_state.selected_invoice_id == inv.id
+        inv_ids.append(inv.id)
+        data.append({
+            "Date": inv.issue_date.strftime("%Y-%m-%d") if inv.issue_date else "-",
+            "Supplier": inv.sender_name,
+            "Invoice #": inv.invoice_number or inv.document_nr,
+            "Amount (no VAT)": inv.total_without_vat,
+            "VAT": inv.total_vat,
+            "Total": inv.total_with_vat,
+        })
 
-        row_label = f"{date_str}   {inv.sender_name:<30s}   {inv_num:<25s}   €{inv.total_without_vat:>9,.2f}   €{inv.total_vat:>8,.2f}   €{inv.total_with_vat:>9,.2f}"
+    df = pd.DataFrame(data)
 
-        if st.button(
-            row_label,
-            key=f"inv_{inv.id}",
-            use_container_width=True,
-            type="primary" if is_selected else "secondary",
-        ):
-            st.session_state.selected_invoice_id = inv.id
-            st.rerun()
+    # Interactive table — select row via checkbox to see details below
+    event = st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        column_config={
+            "Amount (no VAT)": st.column_config.NumberColumn(format="€%.2f"),
+            "VAT": st.column_config.NumberColumn(format="€%.2f"),
+            "Total": st.column_config.NumberColumn(format="€%.2f"),
+        },
+    )
 
     # ---- Detail / PDF viewer ----
-    if st.session_state.selected_invoice_id:
-        inv = session.query(Invoice).get(st.session_state.selected_invoice_id)
+    if event and event.selection and event.selection.rows:
+        row_idx = event.selection.rows[0]
+        inv_id = inv_ids[row_idx]
+        inv = session.query(Invoice).get(inv_id)
+
         if inv:
             st.divider()
             render_invoice_detail(inv)
