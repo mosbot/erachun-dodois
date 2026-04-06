@@ -472,9 +472,9 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
     # ── Pizzeria selector ────────────────────────────────────────────────────
     dodois_cfg = cfg.get("dodois", {})
     pizzerias = dodois_cfg.get("pizzerias", {})
-    pizzeria_keys = list(pizzerias.keys())
-    pizzeria_names = [v.get("name", k) for k, v in pizzerias.items()]
-    current_name = inv.dodois_pizzeria or ""
+    pizzeria_keys = [None] + list(pizzerias.keys())
+    pizzeria_names = ["—"] + [v.get("name", k) for k, v in pizzerias.items()]
+    current_name = inv.dodois_pizzeria or "—"
     current_idx = pizzeria_names.index(current_name) if current_name in pizzeria_names else 0
 
     selected_name = st.selectbox(
@@ -483,8 +483,9 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
         index=current_idx,
         key=f"dodois_pizzeria_{inv.id}",
     )
-    if selected_name != inv.dodois_pizzeria:
-        inv.dodois_pizzeria = selected_name
+    new_pizzeria = None if selected_name == "—" else selected_name
+    if new_pizzeria != inv.dodois_pizzeria:
+        inv.dodois_pizzeria = new_pizzeria
         session.commit()
         st.rerun()
 
@@ -544,6 +545,9 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
         from app.core.dodois_client import DodoisClient
 
         selected_key = pizzeria_keys[pizzeria_names.index(selected_name)]
+        if selected_key is None:
+            st.error("Please select a pizzeria first.")
+            st.stop()
         pizzeria_cfg = pizzerias[selected_key]
 
         with st.spinner("Uploading to Dodois..."):
