@@ -336,12 +336,13 @@ def render_invoices_page():
         session.close()
         return
 
-    # Build DataFrame
+    # Build DataFrame (ID stored separately, not shown)
     cfg = get_config()
+    inv_ids = []
     data = []
     for inv in invoices:
+        inv_ids.append(inv.id)
         data.append({
-            "ID": inv.id,
             "Date": inv.issue_date.strftime("%Y-%m-%d") if inv.issue_date else "-",
             "Supplier": inv.sender_name,
             "Invoice #": inv.invoice_number or inv.document_nr,
@@ -352,8 +353,10 @@ def render_invoices_page():
 
     df = pd.DataFrame(data)
 
-    # Interactive table with selection
-    selected = st.dataframe(
+    st.caption("Click on a row to view invoice details and PDF")
+
+    # Interactive table — row selection
+    event = st.dataframe(
         df,
         use_container_width=True,
         hide_index=True,
@@ -367,9 +370,9 @@ def render_invoices_page():
     )
 
     # ---- Detail / PDF viewer ----
-    if selected and selected.selection and selected.selection.rows:
-        row_idx = selected.selection.rows[0]
-        inv_id = data[row_idx]["ID"]
+    if event and event.selection and event.selection.rows:
+        row_idx = event.selection.rows[0]
+        inv_id = inv_ids[row_idx]
         inv = session.query(Invoice).get(inv_id)
 
         if inv:
