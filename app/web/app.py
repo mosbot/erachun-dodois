@@ -547,12 +547,13 @@ def render_upload_page():
                 xml_content = f.read().decode("utf-8", errors="replace")
                 ubl = parse_ubl_xml(xml_content)
 
-                # Check duplicate
+                # Check duplicate (ignore deleted invoices)
                 existing = (
                     session.query(Invoice)
                     .filter(
                         Invoice.invoice_number == ubl.invoice_number,
                         Invoice.sender_oib == ubl.supplier_oib,
+                        Invoice.processing_status != "deleted",
                     )
                     .first()
                 )

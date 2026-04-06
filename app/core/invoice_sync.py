@@ -203,12 +203,13 @@ class InvoiceSyncService:
 
         ubl = parse_ubl_xml(xml_content)
 
-        # Check for duplicates by invoice number + supplier
+        # Check for duplicates by invoice number + supplier (ignore deleted)
         existing = (
             session.query(Invoice)
             .filter(
                 Invoice.invoice_number == ubl.invoice_number,
                 Invoice.sender_oib == ubl.supplier_oib,
+                Invoice.processing_status != "deleted",
             )
             .first()
         )
