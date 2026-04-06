@@ -355,7 +355,7 @@ def render_invoices_page():
     for inv in invoices:
         inv_ids.append(inv.id)
         data.append({
-            "Date": inv.issue_date.strftime("%Y-%m-%d") if inv.issue_date else "-",
+            "Date": inv.issue_date.strftime("%d.%m.%Y") if inv.issue_date else "-",
             "Supplier": inv.sender_name,
             "Invoice #": inv.invoice_number or inv.document_nr,
             "Amount (no VAT)": inv.total_without_vat,
@@ -402,8 +402,8 @@ def render_invoice_detail(inv: Invoice):
         st.markdown(f"""
         **Supplier:** {inv.sender_name}
         **OIB:** {inv.sender_oib}
-        **Date:** {inv.issue_date.strftime('%Y-%m-%d') if inv.issue_date else '-'}
-        **Due date:** {inv.due_date.strftime('%Y-%m-%d') if inv.due_date else '-'}
+        **Date:** {inv.issue_date.strftime('%d.%m.%Y') if inv.issue_date else '-'}
+        **Due date:** {inv.due_date.strftime('%d.%m.%Y') if inv.due_date else '-'}
 
         **Amount (no VAT):** €{inv.total_without_vat:,.2f}
         **VAT:** €{inv.total_vat:,.2f}
