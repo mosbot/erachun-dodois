@@ -414,28 +414,7 @@ def render_invoices_page():
 
         if inv:
             st.divider()
-
-            # Pizzeria selector
-            cfg = get_config()
-            pizzerias = cfg.get("dodois", {}).get("pizzerias", {})
-            pizzeria_names = ["—"] + [v.get("name", k) for k, v in pizzerias.items()]
-            current = inv.dodois_pizzeria or "—"
-            current_idx = pizzeria_names.index(current) if current in pizzeria_names else 0
-
-            selected_pizzeria = st.selectbox(
-                "Pizzeria",
-                pizzeria_names,
-                index=current_idx,
-                key=f"pizzeria_{inv.id}",
-            )
-
-            new_value = None if selected_pizzeria == "—" else selected_pizzeria
-            if new_value != inv.dodois_pizzeria:
-                inv.dodois_pizzeria = new_value
-                session.commit()
-                st.rerun()
-
-            render_invoice_detail(inv)
+            render_invoice_detail(inv, session)
 
     session.close()
 
@@ -459,7 +438,130 @@ def _delete_invoice(inv: Invoice, storage: dict):
     st.success(f"Invoice {inv.invoice_number} deleted.")
 
 
-def render_invoice_detail(inv: Invoice):
+def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
+    """Render Dodois upload section inside invoice detail (left column)."""
+    from app.db.models import is_dodois_supplier_enabled
+    from app.core.dodois_uploader import validate_invoice, upload_invoice
+    from app.core.ubl_parser import parse_ubl_xml
+
+    if not is_dodois_supplier_enabled(session, inv.sender_oib):
+        return
+
+    st.divider()
+
+    # ── Already uploaded ─────────────────────────────────────────────────────
+    if inv.dodois_supply_id:
+        st.markdown(
+            f'<div style="border:1px solid #bbf7d0;border-radius:8px;padding:14px;background:#f0fdf4">'
+            f'<b style="color:#15803d">✓ Загружен в Dodois</b><br>'
+            f'<span style="font-size:12px;color:#166534">Пиццерия: {inv.dodois_pizzeria or "—"}</span><br>'
+            f'<span style="font-size:11px;color:#64748b">ID: {inv.dodois_supply_id[:24]}...</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("↺ Загрузить повторно", key=f"reupload_{inv.id}",
+                     type="secondary", use_container_width=True):
+            inv.dodois_supply_id = None
+            inv.processing_status = "parsed"
+            session.commit()
+            st.rerun()
+        return
+
+    st.markdown("**Загрузка в Dodois**")
+
+    # ── Pizzeria selector ────────────────────────────────────────────────────
+    dodois_cfg = cfg.get("dodois", {})
+    pizzerias = dodois_cfg.get("pizzerias", {})
+    pizzeria_keys = list(pizzerias.keys())
+    pizzeria_names = [v.get("name", k) for k, v in pizzerias.items()]
+    current_name = inv.dodois_pizzeria or ""
+    current_idx = pizzeria_names.index(current_name) if current_name in pizzeria_names else 0
+
+    selected_name = st.selectbox(
+        "Пиццерия",
+        pizzeria_names,
+        index=current_idx,
+        key=f"dodois_pizzeria_{inv.id}",
+    )
+    if selected_name != inv.dodois_pizzeria:
+        inv.dodois_pizzeria = selected_name
+        session.commit()
+        st.rerun()
+
+    # ── Parse XML ────────────────────────────────────────────────────────────
+    storage = get_storage_config(cfg)
+    xml_dir = Path(storage.get("xml_dir", "/app/data/xmls"))
+
+    if not inv.xml_path:
+        st.warning("XML файл не найден — невозможно проверить маппинг.")
+        return
+
+    xml_file = xml_dir / inv.xml_path
+    if not xml_file.exists():
+        st.warning(f"XML файл не найден на диске: {inv.xml_path}")
+        return
+
+    try:
+        ubl = parse_ubl_xml(xml_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        st.error(f"Ошибка парсинга XML: {e}")
+        return
+
+    issues = validate_invoice(session, inv, ubl)
+
+    # ── Checklist ────────────────────────────────────────────────────────────
+    mapping = session.query(SupplierMapping).filter_by(
+        eracun_oib=inv.sender_oib, enabled=True
+    ).first()
+    supplier_label = mapping.dodois_supplier.dodois_name if (mapping and mapping.dodois_supplier) else inv.sender_name
+    st.markdown(f"✅ Поставщик настроен ({supplier_label})")
+
+    if inv.dodois_pizzeria:
+        st.markdown(f"✅ Пиццерия выбрана ({inv.dodois_pizzeria})")
+    else:
+        st.markdown("❌ Пиццерия не выбрана")
+
+    unmapped_issues = [i for i in issues if "маппинга" in i.lower()]
+    if unmapped_issues:
+        st.markdown(f"❌ {unmapped_issues[0]}")
+        st.caption("→ Маппинги → Товары")
+    else:
+        st.markdown(f"✅ Все товары замаплены ({len(ubl.lines)} позиций)")
+
+    # ── Upload button ────────────────────────────────────────────────────────
+    ready = len(issues) == 0
+    if st.button(
+        "⬆ Загрузить в Dodois",
+        key=f"upload_{inv.id}",
+        type="primary",
+        disabled=not ready,
+        use_container_width=True,
+    ):
+        from app.core.dodois_auth import DodoisSession
+        from app.core.dodois_client import DodoisClient
+
+        selected_key = pizzeria_keys[pizzeria_names.index(selected_name)]
+        pizzeria_cfg = pizzerias[selected_key]
+
+        with st.spinner("Загружаю в Dodois..."):
+            try:
+                ds = DodoisSession(
+                    dodois_cfg["username"],
+                    dodois_cfg["password"],
+                    dodois_cfg.get("totp_secret", ""),
+                )
+                client = DodoisClient(ds)
+                supply_id = upload_invoice(session, inv, ubl, client, pizzeria_cfg)
+                st.success(f"Загружено! ID: {supply_id[:24]}...")
+                st.rerun()
+            except Exception as e:
+                inv.processing_status = "error"
+                inv.processing_error = str(e)
+                session.commit()
+                st.error(f"Ошибка загрузки: {e}")
+
+
+def render_invoice_detail(inv: Invoice, session):
     """Show invoice details and PDF preview."""
     col1, col2 = st.columns([1, 2])
 
@@ -504,6 +606,10 @@ def render_invoice_detail(inv: Invoice):
                     mime="application/xml",
                     use_container_width=True,
                 )
+
+        # Dodois upload block
+        cfg_for_dodois = get_config()
+        render_dodois_upload_block(inv, session, cfg_for_dodois)
 
         # Delete invoice (admin only)
         if st.session_state.get("user_role") == "admin":
