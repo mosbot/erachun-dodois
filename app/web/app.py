@@ -336,53 +336,80 @@ def render_invoices_page():
         session.close()
         return
 
-    # Build invoice options for selector
+    # Clickable invoice rows
     cfg = get_config()
-    invoice_options = {}
+
+    if "selected_invoice_id" not in st.session_state:
+        st.session_state.selected_invoice_id = None
+
+    # CSS for row styling
+    st.markdown("""
+    <style>
+    div[data-testid="stHorizontalBlock"]:has(> div > div > .stButton) {
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(> div > div > .stButton) button {
+        border: none !important;
+        background: transparent !important;
+        text-align: left !important;
+        padding: 8px 12px !important;
+        border-radius: 0 !important;
+        color: #0F172A !important;
+        font-weight: 400 !important;
+        width: 100% !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(> div > div > .stButton):hover button {
+        background: #EFF6FF !important;
+    }
+    .inv-header {
+        display: flex;
+        padding: 8px 12px;
+        border-bottom: 2px solid #E2E8F0;
+        font-weight: 600;
+        font-size: 0.8rem;
+        color: #64748B;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .inv-row-border {
+        border-bottom: 1px solid #F1F5F9;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Table header
+    st.markdown("""
+    <div class="inv-header">
+        <span style="flex:1.2">Date</span>
+        <span style="flex:2.5">Supplier</span>
+        <span style="flex:2">Invoice #</span>
+        <span style="flex:1.3;text-align:right">No VAT</span>
+        <span style="flex:1;text-align:right">VAT</span>
+        <span style="flex:1.3;text-align:right">Total</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Render each invoice as a clickable row
     for inv in invoices:
         date_str = inv.issue_date.strftime("%Y-%m-%d") if inv.issue_date else "-"
         inv_num = inv.invoice_number or inv.document_nr or "-"
-        label = f"{date_str}  |  {inv.sender_name}  |  {inv_num}  |  €{inv.total_with_vat:,.2f}"
-        invoice_options[label] = inv.id
+        is_selected = st.session_state.selected_invoice_id == inv.id
 
-    # Invoice selector
-    selected_label = st.selectbox(
-        "Select invoice to preview",
-        options=list(invoice_options.keys()),
-        index=None,
-        placeholder="Choose an invoice...",
-    )
+        row_label = f"{date_str}   {inv.sender_name:<30s}   {inv_num:<25s}   €{inv.total_without_vat:>9,.2f}   €{inv.total_vat:>8,.2f}   €{inv.total_with_vat:>9,.2f}"
 
-    # Summary table (read-only)
-    data = []
-    for inv in invoices:
-        data.append({
-            "Date": inv.issue_date.strftime("%Y-%m-%d") if inv.issue_date else "-",
-            "Supplier": inv.sender_name,
-            "Invoice #": inv.invoice_number or inv.document_nr,
-            "Amount (no VAT)": inv.total_without_vat,
-            "VAT": inv.total_vat,
-            "Total": inv.total_with_vat,
-        })
-
-    df = pd.DataFrame(data)
-
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Amount (no VAT)": st.column_config.NumberColumn(format="€%.2f"),
-            "VAT": st.column_config.NumberColumn(format="€%.2f"),
-            "Total": st.column_config.NumberColumn(format="€%.2f"),
-        },
-    )
+        if st.button(
+            row_label,
+            key=f"inv_{inv.id}",
+            use_container_width=True,
+            type="primary" if is_selected else "secondary",
+        ):
+            st.session_state.selected_invoice_id = inv.id
+            st.rerun()
 
     # ---- Detail / PDF viewer ----
-    if selected_label:
-        inv_id = invoice_options[selected_label]
-        inv = session.query(Invoice).get(inv_id)
-
+    if st.session_state.selected_invoice_id:
+        inv = session.query(Invoice).get(st.session_state.selected_invoice_id)
         if inv:
             st.divider()
             render_invoice_detail(inv)
