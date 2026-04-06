@@ -60,6 +60,13 @@ section[data-testid="stSidebar"] {
 section[data-testid="stSidebar"] * {
     color: #E2E8F0 !important;
 }
+section[data-testid="stSidebar"] .stButton > button {
+    color: #1E3A5F !important;
+    background-color: #E2E8F0;
+}
+section[data-testid="stSidebar"] .stButton > button:hover {
+    background-color: #FFFFFF;
+}
 section[data-testid="stSidebar"] .stRadio label:hover {
     background-color: rgba(255,255,255,0.08);
     border-radius: 6px;
@@ -343,6 +350,7 @@ def render_invoices_page():
     for inv in invoices:
         inv_ids.append(inv.id)
         data.append({
+            "\U0001F441": "",
             "Date": inv.issue_date.strftime("%Y-%m-%d") if inv.issue_date else "-",
             "Supplier": inv.sender_name,
             "Invoice #": inv.invoice_number or inv.document_nr,
@@ -361,6 +369,7 @@ def render_invoices_page():
         on_select="rerun",
         selection_mode="single-row",
         column_config={
+            "\U0001F441": st.column_config.TextColumn(width="small"),
             "Amount (no VAT)": st.column_config.NumberColumn(format="€%.2f"),
             "VAT": st.column_config.NumberColumn(format="€%.2f"),
             "Total": st.column_config.NumberColumn(format="€%.2f"),
