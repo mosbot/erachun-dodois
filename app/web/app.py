@@ -284,10 +284,10 @@ def _dodois_status_label(inv: Invoice, enabled_oibs: set) -> str:
     if inv.sender_oib not in enabled_oibs:
         return "—"
     if inv.dodois_supply_id:
-        return "✓ Загружен"
+        return "✓ Uploaded"
     if inv.processing_status == "error":
-        return "✗ Ошибка"
-    return "· Не загружен"
+        return "✗ Error"
+    return "· Not uploaded"
 
 
 # ============================================================
@@ -453,13 +453,13 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
     if inv.dodois_supply_id:
         st.markdown(
             f'<div style="border:1px solid #bbf7d0;border-radius:8px;padding:14px;background:#f0fdf4">'
-            f'<b style="color:#15803d">✓ Загружен в Dodois</b><br>'
-            f'<span style="font-size:12px;color:#166534">Пиццерия: {inv.dodois_pizzeria or "—"}</span><br>'
+            f'<b style="color:#15803d">✓ Uploaded to Dodois</b><br>'
+            f'<span style="font-size:12px;color:#166534">Pizzeria: {inv.dodois_pizzeria or "—"}</span><br>'
             f'<span style="font-size:11px;color:#64748b">ID: {inv.dodois_supply_id[:24]}...</span>'
             f'</div>',
             unsafe_allow_html=True,
         )
-        if st.button("↺ Загрузить повторно", key=f"reupload_{inv.id}",
+        if st.button("↺ Re-upload", key=f"reupload_{inv.id}",
                      type="secondary", use_container_width=True):
             inv.dodois_supply_id = None
             inv.processing_status = "parsed"
@@ -467,7 +467,7 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
             st.rerun()
         return
 
-    st.markdown("**Загрузка в Dodois**")
+    st.markdown("**Upload to Dodois**")
 
     # ── Pizzeria selector ────────────────────────────────────────────────────
     dodois_cfg = cfg.get("dodois", {})
@@ -478,7 +478,7 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
     current_idx = pizzeria_names.index(current_name) if current_name in pizzeria_names else 0
 
     selected_name = st.selectbox(
-        "Пиццерия",
+        "Pizzeria",
         pizzeria_names,
         index=current_idx,
         key=f"dodois_pizzeria_{inv.id}",
@@ -493,18 +493,18 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
     xml_dir = Path(storage.get("xml_dir", "/app/data/xmls"))
 
     if not inv.xml_path:
-        st.warning("XML файл не найден — невозможно проверить маппинг.")
+        st.warning("XML file not found — cannot validate product mapping.")
         return
 
     xml_file = xml_dir / inv.xml_path
     if not xml_file.exists():
-        st.warning(f"XML файл не найден на диске: {inv.xml_path}")
+        st.warning(f"XML file missing on disk: {inv.xml_path}")
         return
 
     try:
         ubl = parse_ubl_xml(xml_file.read_text(encoding="utf-8"))
     except Exception as e:
-        st.error(f"Ошибка парсинга XML: {e}")
+        st.error(f"XML parse error: {e}")
         return
 
     issues = validate_invoice(session, inv, ubl)
@@ -514,24 +514,27 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
         eracun_oib=inv.sender_oib, enabled=True
     ).first()
     supplier_label = mapping.dodois_supplier.dodois_name if (mapping and mapping.dodois_supplier) else inv.sender_name
-    st.markdown(f"✅ Поставщик настроен ({supplier_label})")
+    st.markdown(f"✅ Supplier configured ({supplier_label})")
 
     if inv.dodois_pizzeria:
-        st.markdown(f"✅ Пиццерия выбрана ({inv.dodois_pizzeria})")
+        st.markdown(f"✅ Pizzeria selected ({inv.dodois_pizzeria})")
     else:
-        st.markdown("❌ Пиццерия не выбрана")
+        st.markdown("❌ Pizzeria not selected")
 
     unmapped_issues = [i for i in issues if "маппинга" in i.lower()]
     if unmapped_issues:
-        st.markdown(f"❌ {unmapped_issues[0]}")
-        st.caption("→ Маппинги → Товары")
+        # rewrite Russian issue text to English
+        n = unmapped_issues[0].split()[0]
+        names_part = unmapped_issues[0].split(": ", 1)[-1] if ": " in unmapped_issues[0] else ""
+        st.markdown(f"❌ {n} products without mapping: {names_part}")
+        st.caption("→ Mappings → Products")
     else:
-        st.markdown(f"✅ Все товары замаплены ({len(ubl.lines)} позиций)")
+        st.markdown(f"✅ All {len(ubl.lines)} products mapped")
 
     # ── Upload button ────────────────────────────────────────────────────────
     ready = len(issues) == 0
     if st.button(
-        "⬆ Загрузить в Dodois",
+        "⬆ Upload to Dodois",
         key=f"upload_{inv.id}",
         type="primary",
         disabled=not ready,
@@ -543,7 +546,7 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
         selected_key = pizzeria_keys[pizzeria_names.index(selected_name)]
         pizzeria_cfg = pizzerias[selected_key]
 
-        with st.spinner("Загружаю в Dodois..."):
+        with st.spinner("Uploading to Dodois..."):
             try:
                 ds = DodoisSession(
                     dodois_cfg["username"],
@@ -552,13 +555,13 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
                 )
                 client = DodoisClient(ds)
                 supply_id = upload_invoice(session, inv, ubl, client, pizzeria_cfg)
-                st.success(f"Загружено! ID: {supply_id[:24]}...")
+                st.success(f"Done! Supply ID: {supply_id[:24]}...")
                 st.rerun()
             except Exception as e:
                 inv.processing_status = "error"
                 inv.processing_error = str(e)
                 session.commit()
-                st.error(f"Ошибка загрузки: {e}")
+                st.error(f"Upload failed: {e}")
 
 
 def render_invoice_detail(inv: Invoice, session):
@@ -570,10 +573,10 @@ def render_invoice_detail(inv: Invoice, session):
         st.markdown(
             f"**{inv.sender_name}** · OIB: `{inv.sender_oib}`  \n"
             f"📅 {inv.issue_date.strftime('%d.%m.%Y') if inv.issue_date else '—'}"
-            f" &nbsp;·&nbsp; срок: {inv.due_date.strftime('%d.%m.%Y') if inv.due_date else '—'}  \n"
-            f"Без НДС: **€{inv.total_without_vat:,.2f}** &nbsp;·&nbsp; "
-            f"НДС: €{inv.total_vat:,.2f} &nbsp;·&nbsp; "
-            f"**Итого: €{inv.total_with_vat:,.2f}**  \n"
+            f" &nbsp;·&nbsp; due: {inv.due_date.strftime('%d.%m.%Y') if inv.due_date else '—'}  \n"
+            f"Ex VAT: **€{inv.total_without_vat:,.2f}** &nbsp;·&nbsp; "
+            f"VAT: €{inv.total_vat:,.2f} &nbsp;·&nbsp; "
+            f"**Total: €{inv.total_with_vat:,.2f}**  \n"
             f"eRačun ID: {inv.electronic_id or 'Manual'} &nbsp;·&nbsp; `{inv.processing_status}`",
             unsafe_allow_html=False,
         )
