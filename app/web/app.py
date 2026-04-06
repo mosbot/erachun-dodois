@@ -25,11 +25,115 @@ from app.core.ubl_parser import parse_ubl_xml
 # Page config
 # ============================================================
 st.set_page_config(
-    page_title="e-rachun - DodoIs",
-    page_icon="📄",
+    page_title="eRačun Portal",
+    page_icon=None,
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ============================================================
+# Custom CSS — Design System
+# ============================================================
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+:root {
+    --color-primary: #1E3A5F;
+    --color-secondary: #2563EB;
+    --color-accent: #059669;
+    --color-background: #F8FAFC;
+    --color-foreground: #0F172A;
+    --color-muted: #64748B;
+    --color-border: #E2E8F0;
+    --color-destructive: #DC2626;
+}
+
+html, body, [class*="css"] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* Sidebar */
+section[data-testid="stSidebar"] {
+    background-color: #1E3A5F;
+}
+section[data-testid="stSidebar"] * {
+    color: #E2E8F0 !important;
+}
+section[data-testid="stSidebar"] .stRadio label:hover {
+    background-color: rgba(255,255,255,0.08);
+    border-radius: 6px;
+}
+
+/* Metrics */
+[data-testid="stMetric"] {
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    padding: 16px 20px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+[data-testid="stMetricLabel"] {
+    color: #64748B !important;
+    font-size: 0.8rem !important;
+    font-weight: 500 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+[data-testid="stMetricValue"] {
+    color: #0F172A !important;
+    font-weight: 600 !important;
+}
+
+/* Buttons */
+.stButton > button {
+    border-radius: 6px;
+    font-weight: 500;
+    transition: all 150ms ease;
+}
+.stButton > button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(37,99,235,0.15);
+}
+
+/* Data table */
+[data-testid="stDataFrame"] {
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+/* Login card */
+.login-card {
+    background: #FFFFFF;
+    border-radius: 12px;
+    padding: 2.5rem;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.06);
+    border: 1px solid #E2E8F0;
+    max-width: 400px;
+    margin: 0 auto;
+}
+.login-header {
+    text-align: center;
+    padding-bottom: 1.5rem;
+}
+.login-header h1 {
+    color: #1E3A5F;
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: 0.25rem;
+}
+.login-header p {
+    color: #64748B;
+    font-size: 0.875rem;
+}
+
+/* Page titles */
+h1 {
+    color: #1E3A5F !important;
+    font-weight: 700 !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # ============================================================
 # Config & DB
@@ -65,9 +169,11 @@ def authenticate():
 
     st.markdown(
         """
-        <div style="text-align: center; padding: 2rem 0;">
-            <h1>📄 e-rachun - DodoIs</h1>
-            <p style="color: #666;">Invoice management for Orange food business d.o.o.</p>
+        <div class="login-card">
+            <div class="login-header">
+                <h1>eRačun Portal</h1>
+                <p>Invoice management for Orange food business d.o.o.</p>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -76,9 +182,9 @@ def authenticate():
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
         with st.form("login_form"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            submit = st.form_submit_button("Login", use_container_width=True)
+            username = st.text_input("Username", placeholder="Enter username")
+            password = st.text_input("Password", type="password", placeholder="Enter password")
+            submit = st.form_submit_button("Sign in", use_container_width=True)
 
             if submit:
                 if username in users:
@@ -104,13 +210,13 @@ def authenticate():
 # ============================================================
 def render_sidebar():
     with st.sidebar:
-        st.markdown(f"### 👤 {st.session_state.user_name}")
-        st.caption(f"Role: {st.session_state.user_role}")
+        st.markdown(f"### {st.session_state.user_name}")
+        st.caption(f"{st.session_state.user_role.upper()}")
         st.divider()
 
         page = st.radio(
             "Navigation",
-            ["📋 Invoices", "📤 Upload XML", "⚙️ Settings"],
+            ["Invoices", "Upload XML", "Settings"],
             label_visibility="collapsed",
         )
 
@@ -118,7 +224,7 @@ def render_sidebar():
 
         # Sync button (admin only)
         if st.session_state.user_role == "admin":
-            if st.button("🔄 Sync from eRačun", use_container_width=True):
+            if st.button("Sync from eRačun", use_container_width=True):
                 sync_invoices()
 
         # Last sync info
@@ -134,7 +240,7 @@ def render_sidebar():
         session.close()
 
         st.divider()
-        if st.button("🚪 Logout", use_container_width=True):
+        if st.button("Sign out", use_container_width=True):
             st.session_state.authenticated = False
             st.session_state.username = None
             st.rerun()
@@ -146,7 +252,7 @@ def render_sidebar():
 # Invoice List Page
 # ============================================================
 def render_invoices_page():
-    st.title("📋 Incoming Invoices")
+    st.title("Incoming Invoices")
 
     session = get_db()()
 
@@ -155,8 +261,8 @@ def render_invoices_page():
 
     with col1:
         search_text = st.text_input(
-            "🔍 Search",
-            placeholder="Supplier name or invoice #...",
+            "Search",
+            placeholder="Supplier name or invoice number...",
         )
     with col2:
         # Get unique supplier names
@@ -244,10 +350,10 @@ def render_invoices_page():
             "VAT": inv.total_vat,
             "Total": inv.total_with_vat,
             "Pizzeria": inv.dodois_pizzeria or "—",
-            "Dodois": "✅" if dodois_enabled else "—",
+            "Dodois": "Yes" if dodois_enabled else "—",
             "Status": inv.processing_status,
-            "PDF": "📄" if inv.pdf_path else "-",
-            "XML": "📋" if inv.xml_path else "-",
+            "PDF": "Yes" if inv.pdf_path else "—",
+            "XML": "Yes" if inv.xml_path else "—",
         })
 
     df = pd.DataFrame(data)
@@ -307,7 +413,7 @@ def render_invoice_detail(inv: Invoice):
             pdf_full = Path(storage.get("pdf_dir", "/app/data/pdfs")) / inv.pdf_path
             if pdf_full.exists():
                 st.download_button(
-                    "📄 Download PDF",
+                    "Download PDF",
                     data=pdf_full.read_bytes(),
                     file_name=inv.pdf_path,
                     mime="application/pdf",
@@ -318,7 +424,7 @@ def render_invoice_detail(inv: Invoice):
             xml_full = Path(storage.get("xml_dir", "/app/data/xmls")) / inv.xml_path
             if xml_full.exists():
                 st.download_button(
-                    "📋 Download XML",
+                    "Download XML",
                     data=xml_full.read_bytes(),
                     file_name=inv.xml_path,
                     mime="application/xml",
@@ -348,7 +454,7 @@ def render_invoice_detail(inv: Invoice):
 # Upload Page
 # ============================================================
 def render_upload_page():
-    st.title("📤 Upload Invoice XML")
+    st.title("Upload Invoice XML")
     st.caption("Upload a UBL 2.1 XML invoice file manually.")
 
     uploaded = st.file_uploader(
@@ -436,7 +542,7 @@ def render_upload_page():
 # Settings Page
 # ============================================================
 def render_settings_page():
-    st.title("⚙️ Settings")
+    st.title("Settings")
 
     if st.session_state.user_role != "admin":
         st.warning("Admin access required.")
@@ -451,7 +557,7 @@ def render_settings_page():
 
     if connected:
         st.success(f"Configured: {eracun_cfg.get('username')} / Company: {eracun_cfg.get('company_id')}")
-        if st.button("🔍 Test Connection"):
+        if st.button("Test Connection"):
             from app.core.eracun_client import EracunClient, EracunCredentials
             creds = EracunCredentials(
                 username=eracun_cfg["username"],
@@ -561,11 +667,11 @@ def main():
 
     page = render_sidebar()
 
-    if page == "📋 Invoices":
+    if page == "Invoices":
         render_invoices_page()
-    elif page == "📤 Upload XML":
+    elif page == "Upload XML":
         render_upload_page()
-    elif page == "⚙️ Settings":
+    elif page == "Settings":
         render_settings_page()
 
 
