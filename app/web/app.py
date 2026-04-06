@@ -390,6 +390,27 @@ def render_invoices_page():
 
         if inv:
             st.divider()
+
+            # Pizzeria selector
+            cfg = get_config()
+            pizzerias = cfg.get("dodois", {}).get("pizzerias", {})
+            pizzeria_names = ["—"] + [v.get("name", k) for k, v in pizzerias.items()]
+            current = inv.dodois_pizzeria or "—"
+            current_idx = pizzeria_names.index(current) if current in pizzeria_names else 0
+
+            selected_pizzeria = st.selectbox(
+                "Pizzeria",
+                pizzeria_names,
+                index=current_idx,
+                key=f"pizzeria_{inv.id}",
+            )
+
+            new_value = None if selected_pizzeria == "—" else selected_pizzeria
+            if new_value != inv.dodois_pizzeria:
+                inv.dodois_pizzeria = new_value
+                session.commit()
+                st.rerun()
+
             render_invoice_detail(inv)
 
     session.close()
