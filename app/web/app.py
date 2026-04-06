@@ -418,6 +418,25 @@ def render_invoices_page():
     session.close()
 
 
+def _delete_invoice(inv: Invoice, storage: dict):
+    """Soft-delete invoice and remove associated files from disk."""
+    session = get_db()()
+    db_inv = session.query(Invoice).get(inv.id)
+    if db_inv:
+        db_inv.processing_status = "deleted"
+        session.commit()
+    session.close()
+
+    if inv.pdf_path:
+        pdf_full = Path(storage.get("pdf_dir", "/app/data/pdfs")) / inv.pdf_path
+        pdf_full.unlink(missing_ok=True)
+    if inv.xml_path:
+        xml_full = Path(storage.get("xml_dir", "/app/data/xmls")) / inv.xml_path
+        xml_full.unlink(missing_ok=True)
+
+    st.success(f"Invoice {inv.invoice_number} deleted.")
+
+
 def render_invoice_detail(inv: Invoice):
     """Show invoice details and PDF preview."""
     col1, col2 = st.columns([1, 2])
@@ -463,6 +482,27 @@ def render_invoice_detail(inv: Invoice):
                     mime="application/xml",
                     use_container_width=True,
                 )
+
+        # Delete invoice (admin only)
+        if st.session_state.get("user_role") == "admin":
+            st.divider()
+            confirm_key = f"confirm_delete_{inv.id}"
+            if st.session_state.get(confirm_key):
+                st.warning("Are you sure? This cannot be undone.")
+                col_yes, col_no = st.columns(2)
+                with col_yes:
+                    if st.button("Yes, delete", key=f"del_yes_{inv.id}", type="primary", use_container_width=True):
+                        _delete_invoice(inv, storage)
+                        st.session_state[confirm_key] = False
+                        st.rerun()
+                with col_no:
+                    if st.button("Cancel", key=f"del_no_{inv.id}", use_container_width=True):
+                        st.session_state[confirm_key] = False
+                        st.rerun()
+            else:
+                if st.button("Delete invoice", key=f"del_{inv.id}", type="secondary", use_container_width=True):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
 
     with col2:
         # PDF preview in iframe
