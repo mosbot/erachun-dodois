@@ -208,8 +208,8 @@ dodois:
       unit_id: "e67b8c27d336ae8611ede2943f258e31"
     zagreb-2:
       name: "Zagreb-2"
-      department_id: ""  # TODO: fill in
-      unit_id: ""
+      department_id: "e67b8c27d336ae8311ede29371def8f6"
+      unit_id: "11efed30ba1d4f1b16d6cf117cffb280"
 
 # Database
 database:
