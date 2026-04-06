@@ -296,6 +296,7 @@ def render_invoices_page():
                 datetime.now() - timedelta(days=30),
                 datetime.now(),
             ),
+            format="DD.MM.YYYY",
         )
     with col4:
         amount_range = st.slider(
