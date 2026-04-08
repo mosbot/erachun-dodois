@@ -45,12 +45,18 @@ class DodoisClient:
             r.raise_for_status()
             data = r.json()
             # API returns {"supplies": [...], "pagination": {...}}
-            items = (data.get("supplies") or data.get("items") or data) if isinstance(data, dict) else data
+            if isinstance(data, dict):
+                items = data.get("supplies") or data.get("items") or []
+                pag = data.get("pagination") or {}
+                total = pag.get("total") or data.get("total") or 0
+            else:
+                items = data
+                pag = {}
+                total = 0
             if not items:
                 break
             all_supplies.extend(items)
-            pag = data.get("pagination", {}) if isinstance(data, dict) else {}
-            total = pag.get("total") or data.get("total") or len(items)
+            total = total or len(items)
             if len(all_supplies) >= total or len(items) < page_size:
                 break
             page += 1

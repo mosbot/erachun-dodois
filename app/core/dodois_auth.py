@@ -188,8 +188,21 @@ class DodoisSession:
 
         return session
 
+    def _is_oidc_redirect(self, response: requests.Response) -> bool:
+        """Return True if the response is an OIDC auto-submit HTML form."""
+        if "text/html" not in response.headers.get("content-type", ""):
+            return False
+        return "auth.dodois.com" in response.text and "<form" in response.text
+
     def get(self, url: str, **kwargs) -> requests.Response:
-        return self.get_session().get(url, **kwargs)
+        session = self.get_session()
+        response = session.get(url, **kwargs)
+        if self._is_oidc_redirect(response):
+            logger.info("Session expired (OIDC redirect) — re-logging in...")
+            self.invalidate()
+            session = self.get_session()
+            response = session.get(url, **kwargs)
+        return response
 
     def post(self, url: str, **kwargs) -> requests.Response:
         return self.get_session().post(url, **kwargs)

@@ -20,7 +20,7 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./config.local.yaml:/app/config.local.yaml:ro
-      - invoice_data:/app/data
+      - ./data:/app/data
     depends_on:
       postgres:
         condition: service_healthy
