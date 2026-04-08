@@ -1,0 +1,11 @@
+.git/
+__pycache__/
+*.pyc
+.claude/
+.playwright-mcp/
+.superpowers/
+*.png
+dev.db
+*_signed*.xml
+docs/superpowers/
+config.local.yaml
