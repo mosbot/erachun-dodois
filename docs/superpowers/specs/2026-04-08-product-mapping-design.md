@@ -8,7 +8,7 @@
 ## Goal
 
 Автоматически заполнить `ProductMapping` (eRačun description → Dodois rawMaterialId)  
-путём кросс-матчинга инвойсов между eRačun DB и Dodois API.
+путём кросс-матчинга инвойсов между eRačun DB и Dodois API — **для всех поставщиков**.
 
 ---
 
@@ -18,8 +18,8 @@
 |----------|-----------|
 | eRačun DB (`invoices`) | `invoice_number`, `xml_path`, `sender_oib` |
 | XML файлы на сервере | Строки инвойса: `description`, `quantity`, `line_total` |
-| Dodois API | Поставки METRO: `invoiceNumber`, items (`rawMaterialId`, `containerId`, `qty`, `totalWithVat`) |
-| DB (`dodois_raw_material_catalog`) | Уже синхронизирован через `sync_dodois_catalog.py` |
+| Dodois API | Поставки всех поставщиков: `invoiceNumber`, `supplierId`, items (`rawMaterialId`, `containerId`, `qty`, `totalWithVat`) |
+| DB (`dodois_raw_material_catalog`) | Каталог всех поставщиков (47 поставщиков, 500+ материалов) |
 
 ---
 
@@ -41,46 +41,50 @@ Regex:   ^(\d)/0\(0(\d+)\)0(\d{3})/0*(\d+)$
 
 ## Algorithm
 
-### Step 1 — Fetch Dodois Supplies
+### Step 1 — Sync Catalog
+
+Перед матчингом убедиться что `dodois_raw_material_catalog` заполнен для всех поставщиков:
+```bash
+docker cp dodois-suppliers-clean.json e-rachun-dodois:/tmp/
+docker exec e-rachun-dodois python scripts/sync_dodois_catalog.py /tmp/dodois-suppliers-clean.json
+```
+
+### Step 2 — Fetch Dodois Supplies
 
 ```
 GET /Accounting/v1/incomingstock/departments/{dept}/supplies?from=2025-01-01&to=today
 ```
 
 - Оба депта: Zagreb-1 и Zagreb-2
-- Фильтр по supplierId = METRO (`11eeeb8be458f06caf0d5b3908d3a4aa`)
-- Для каждой поставки: `GET /Accounting/v1/incomingstock/supplies/{id}` — получить items
+- **Все поставщики** — без фильтрации по supplierId
+- Дедупликация по `invoiceNumber + supplierId` (один инвойс может быть в двух деп-тах)
+- Для каждой поставки: `GET /Accounting/v1/incomingstock/supplies/{id}` → items
 
-### Step 2 — Match Invoices
+### Step 3 — Match Invoices
 
-Конвертировать Dodois `invoiceNumber` → eRačun формат.  
-Искать в DB: `Invoice.invoice_number ILIKE '%{eracun_number}%'`  
-(eRačun может хранить номер с префиксами типа "Račun ")
+Для каждой Dodois поставки:
+1. Конвертировать `invoiceNumber` в eRačun формат
+2. Искать в DB: `Invoice WHERE invoice_number ILIKE '%{eracun_number}%' AND sender_oib = {supplier_oib}`
+3. Supplier OIB: найти по `DodoisSupplierCatalog.dodois_id = supply.supplierId` → `dodois_inn` (INN/OIB поставщика)
 
-### Step 3 — Match Lines within Invoice
+### Step 4 — Match Lines within Invoice
 
 Для каждой пары (eRačun Invoice ↔ Dodois Supply):
 - Парсим XML (`xml_path`) → `UBLLineItem[]` (description, quantity, line_total)
+- Агрегируем дубли: группировать по description, суммировать qty и line_total
 - Для каждого Dodois item (rawMaterialId, qty, totalWithVat):
   - Ищем UBL строку где `abs(ubl.quantity - item.qty) < 0.01` И `abs(ubl.line_total - item.totalWithVat) < 0.02`
-  - Если одно совпадение → match
-  - Если несколько → берём лучшее (минимальная разница по обоим полям)
+  - Одно совпадение → match
+  - Несколько → пропустить (ambiguous)
 
-### Step 4 — Write ProductMapping
+### Step 5 — Write ProductMapping
 
 Для каждого match:
-1. Найти `DodoisRawMaterialCatalog` по `dodois_material_id + dodois_container_id`
-2. Найти `ProductMapping` по `supplier_mapping_id + eracun_description`
-3. Если `dodois_raw_material_id` уже заполнен — пропустить (не перезаписывать вручную заданные)
-4. Если NULL → заполнить + установить `enabled=True`
-
----
-
-## Price Tolerance
-
-METRO инвойсы могут содержать строки-дубли (одинаковый товар несколько раз).  
-`ubl_parser.py` агрегирует их перед загрузкой в Dodois.  
-При матчинге используем **агрегированные** строки (сгруппировать по description, суммировать qty и line_total).
+1. Найти `SupplierMapping` по `eracun_oib = invoice.sender_oib`
+2. Найти `DodoisRawMaterialCatalog` по `dodois_material_id + dodois_container_id`
+3. Найти `ProductMapping` по `supplier_mapping_id + eracun_description`
+4. Если `dodois_raw_material_id` уже заполнен → пропустить (не перезаписывать вручную)
+5. Если NULL → заполнить + `enabled=True`
 
 ---
 
@@ -103,22 +107,23 @@ docker exec e-rachun-dodois python scripts/match_invoices.py
 
 ### Output
 ```
-Fetched 85 Dodois supplies for METRO
-Matched 72 invoices in eRačun DB
-Line matches: 312 found, 18 skipped (ambiguous), 5 skipped (no XML)
+Catalog: 47 suppliers, 512 materials synced
+Fetched 340 Dodois supplies (Zagreb-1: 210, Zagreb-2: 130, dedup: 0)
+Matched 287 invoices in eRačun DB (53 not found)
+Line matches: 1842 found, 34 ambiguous, 12 no XML
 
-ProductMappings updated: 67 new, 0 updated, 3 conflicts
-Unmapped eRačun descriptions: 23 (see mappings page)
+ProductMappings: 198 new, 0 overwritten, 5 conflicts
+Unmapped eRačun descriptions: 47 (see Mappings page)
 ```
 
 ---
 
 ## Dependencies
 
-- `app/core/ubl_parser.py` — уже есть, используем as-is
-- `app/core/config_loader.py` — конфиг с Dodois credentials
+- `app/core/ubl_parser.py` — as-is
+- `app/core/config_loader.py` — Dodois credentials
 - `app/db/models.py` — `ProductMapping`, `DodoisRawMaterialCatalog`, `SupplierMapping`
-- Новый: `app/core/dodois_client.py` — Dodois API client (GET supplies)
+- Новый: `app/core/dodois_client.py` — GET supplies list + detail
 - Новый: `scripts/match_invoices.py` — основной скрипт
 
 ---
@@ -134,9 +139,11 @@ Unmapped eRačun descriptions: 23 (see mappings page)
 
 | Кейс | Решение |
 |------|---------|
-| Один товар в инвойсе несколько раз (дубли METRO) | Агрегировать UBL строки перед матчингом |
+| Дубли строк METRO (один товар несколько раз) | Агрегировать по description перед матчингом |
 | Несколько кандидатов по qty+price | Пропустить (ambiguous), логировать |
 | XML файл отсутствует | Пропустить инвойс, логировать |
 | ProductMapping уже заполнен вручную | Не перезаписывать |
 | Dodois invoice number уже в eRačun формате | Обработать как есть |
-| Zagreb-1 и Zagreb-2 (разные dept_id) | Fetch для обоих, дедупликация по invoice number |
+| Zagreb-1 и Zagreb-2 (разные dept_id) | Fetch для обоих, дедупликация по invoice+supplier |
+| Поставщик без `dodois_inn` в каталоге | Матчить по invoice_number без OIB фильтра |
+| SupplierMapping не существует | Создать автоматически через `get_or_create_supplier_mapping` |
