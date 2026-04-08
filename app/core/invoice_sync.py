@@ -163,6 +163,7 @@ class InvoiceSyncService:
                 invoice.total_without_vat = ubl.total_without_vat
                 invoice.total_vat = ubl.total_vat
                 invoice.total_with_vat = ubl.total_with_vat
+                invoice.dodois_pizzeria = ubl.delivery_pizzeria
                 invoice.processing_status = "parsed"
 
                 # Extract embedded PDF
