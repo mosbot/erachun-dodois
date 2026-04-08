@@ -134,12 +134,16 @@ class EracunClient:
         )
         resp.raise_for_status()
 
-        # Response contains the XML document
+        # API returns XML directly (application/xml)
+        content_type = resp.headers.get("content-type", "")
+        if "xml" in content_type:
+            return resp.text
+
+        # Fallback: try JSON wrapper
         data = resp.json()
         if isinstance(data, str):
             return data
         if isinstance(data, dict):
-            # XML might be in a field
             return data.get("Document", data.get("Xml", str(data)))
         return str(data)
 
