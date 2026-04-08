@@ -1,3 +1,7 @@
-erachun.dodotool.com {
-    reverse_proxy localhost:8501
+{
+    auto_https off
+}
+
+er.dodotool.com {
+    reverse_proxy web:8501
 }

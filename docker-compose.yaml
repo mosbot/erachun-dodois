@@ -1,11 +1,22 @@
 version: "3.8"
 
 services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: e-rachun-caddy
+    ports:
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+    restart: unless-stopped
+
   web:
     build: .
     container_name: e-rachun-dodois
-    ports:
-      - "127.0.0.1:8501:8501"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./config.local.yaml:/app/config.local.yaml:ro
@@ -26,8 +37,6 @@ services:
       POSTGRES_PASSWORD: eracun_secret
     volumes:
       - pgdata:/var/lib/postgresql/data
-    # ports:
-    #   - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U eracun -d e_rachun_dodois"]
       interval: 5s
@@ -38,3 +47,5 @@ services:
 volumes:
   pgdata:
   invoice_data:
+  caddy_data:
+  caddy_config:
