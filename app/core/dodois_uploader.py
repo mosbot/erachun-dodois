@@ -125,8 +125,14 @@ def build_supply_payload(
         mat = pm.raw_material
 
         total_without_vat = round(line.line_total, 2)
-        total_with_vat = round(line.line_total + line.tax_amount, 2)
-        vat_value = round(line.tax_amount, 2)
+        # Some Croatian suppliers (e.g. Pivac) omit per-line TaxAmount and only
+        # report it at document level. Fall back to computing it from the
+        # classified tax rate when the parser didn't pick one up.
+        raw_tax_amount = line.tax_amount
+        if raw_tax_amount <= 0 and line.tax_percent > 0:
+            raw_tax_amount = line.line_total * line.tax_percent / 100
+        total_with_vat = round(total_without_vat + raw_tax_amount, 2)
+        vat_value = round(raw_tax_amount, 2)
         tax_id = TAX_RATE_IDS.get(int(line.tax_percent), TAX_RATE_IDS[25])
 
         supply_items.append({
