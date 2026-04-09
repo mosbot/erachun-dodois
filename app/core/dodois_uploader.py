@@ -1,6 +1,7 @@
 """
 Dodois upload logic: validate invoice readiness, build payload, upload.
 """
+import json
 import uuid
 from collections import defaultdict
 from datetime import datetime
@@ -89,8 +90,20 @@ def _compute_price_per_unit(total_price: float, qty: float, mat) -> float:
     return round(total_price / divisor, 2)
 
 
-def build_supply_payload(session, invoice: Invoice, ubl: UBLInvoice, pizzeria_cfg: dict) -> dict:
-    """Build POST /Accounting/v1/incomingstock/supplies payload."""
+def build_supply_payload(
+    session,
+    invoice: Invoice,
+    ubl: UBLInvoice,
+    pizzeria_cfg: dict,
+    skip_unmapped: bool = False,
+) -> tuple[dict, list[str]]:
+    """Build POST /Accounting/v1/incomingstock/supplies payload.
+
+    Returns (payload, skipped_descriptions). When skip_unmapped is False,
+    raises ValueError on the first unmapped line. When True, those lines
+    are silently dropped and their descriptions are returned in the second
+    tuple element.
+    """
     mapping = session.query(SupplierMapping).filter_by(
         eracun_oib=invoice.sender_oib
     ).first()
@@ -99,10 +112,16 @@ def build_supply_payload(session, invoice: Invoice, ubl: UBLInvoice, pizzeria_cf
     inv_date = invoice.issue_date.strftime("%Y-%m-%d") if invoice.issue_date else datetime.utcnow().strftime("%Y-%m-%d")
     receipt_dt = f"{inv_date}T12:00:00"
 
-    supply_items = []
+    supply_items: list[dict] = []
+    skipped: list[str] = []
     for line in _aggregate_lines(ubl.lines):
         desc = (line.item_name or line.description or "").strip()
         pm = get_product_mapping(session, mapping.id, desc, line.standard_item_id or None)
+        if not pm or not pm.raw_material:
+            if skip_unmapped:
+                skipped.append(desc)
+                continue
+            raise ValueError(f"No mapping for line: {desc}")
         mat = pm.raw_material
 
         total_without_vat = round(line.line_total, 2)
@@ -122,7 +141,10 @@ def build_supply_payload(session, invoice: Invoice, ubl: UBLInvoice, pizzeria_cf
             "pricePerUnitWithoutVat": _compute_price_per_unit(total_without_vat, line.quantity, mat),
         })
 
-    return {
+    if not supply_items:
+        raise ValueError("No mapped lines to upload")
+
+    payload = {
         "id": uuid.uuid4().hex,
         "supplierId": supplier_id,
         "unitId": pizzeria_cfg["unit_id"],
@@ -135,16 +157,29 @@ def build_supply_payload(session, invoice: Invoice, ubl: UBLInvoice, pizzeria_cf
         "currencyCode": 978,
         "supplyItems": supply_items,
     }
+    return payload, skipped
 
 
-def upload_invoice(session, invoice: Invoice, ubl: UBLInvoice, client, pizzeria_cfg: dict) -> str:
-    """Upload invoice to Dodois. Returns supply ID. Updates invoice in DB.
-    Raises exception on API failure — caller is responsible for setting error status.
+def upload_invoice(
+    session,
+    invoice: Invoice,
+    ubl: UBLInvoice,
+    client,
+    pizzeria_cfg: dict,
+    skip_unmapped: bool = False,
+) -> tuple[str, list[str]]:
+    """Upload invoice to Dodois. Returns (supply_id, skipped_descriptions).
+    Updates invoice in DB. Raises on API failure — caller sets error status.
     """
-    payload = build_supply_payload(session, invoice, ubl, pizzeria_cfg)
+    payload, skipped = build_supply_payload(
+        session, invoice, ubl, pizzeria_cfg, skip_unmapped=skip_unmapped
+    )
     result = client.create_supply(payload)
     supply_id = result.get("id", payload["id"])
     invoice.dodois_supply_id = supply_id
+    invoice.dodois_upload_partial = bool(skipped)
+    invoice.dodois_skipped_count = len(skipped)
+    invoice.dodois_skipped_lines = json.dumps(skipped, ensure_ascii=False) if skipped else None
     invoice.processing_status = "uploaded_to_dodois"
     session.commit()
-    return supply_id
+    return supply_id, skipped

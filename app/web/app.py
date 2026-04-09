@@ -440,14 +440,17 @@ def _delete_invoice(inv: Invoice, storage: dict):
 
 def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
     """Render Dodois upload section inside invoice detail (left column)."""
+    import json as _json
     from app.db.models import is_dodois_supplier_enabled
     from app.core.dodois_uploader import validate_invoice, upload_invoice
     from app.core.ubl_parser import parse_ubl_xml
 
-    if not is_dodois_supplier_enabled(session, inv.sender_oib):
-        return
-
     st.divider()
+
+    dodois_cfg = cfg.get("dodois", {})
+    pizzerias = dodois_cfg.get("pizzerias", {})
+    pizzeria_keys = [None] + list(pizzerias.keys())
+    pizzeria_names = ["—"] + [v.get("name", k) for k, v in pizzerias.items()]
 
     # ── Already uploaded ─────────────────────────────────────────────────────
     if inv.dodois_supply_id:
@@ -459,9 +462,18 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
             f'</div>',
             unsafe_allow_html=True,
         )
+        if inv.dodois_upload_partial:
+            skipped_list = _json.loads(inv.dodois_skipped_lines or "[]")
+            st.markdown(f"⚠ Partial upload: {inv.dodois_skipped_count} lines skipped")
+            with st.expander("Skipped lines"):
+                for s in skipped_list:
+                    st.text(f"• {s}")
         if st.button("↺ Re-upload", key=f"reupload_{inv.id}",
                      type="secondary", use_container_width=True):
             inv.dodois_supply_id = None
+            inv.dodois_upload_partial = False
+            inv.dodois_skipped_count = 0
+            inv.dodois_skipped_lines = None
             inv.processing_status = "parsed"
             session.commit()
             st.rerun()
@@ -469,11 +481,7 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
 
     st.markdown("**Upload to Dodois**")
 
-    # ── Pizzeria selector ────────────────────────────────────────────────────
-    dodois_cfg = cfg.get("dodois", {})
-    pizzerias = dodois_cfg.get("pizzerias", {})
-    pizzeria_keys = [None] + list(pizzerias.keys())
-    pizzeria_names = ["—"] + [v.get("name", k) for k, v in pizzerias.items()]
+    # ── Pizzeria selector (always visible, for all suppliers) ───────────────
     current_name = inv.dodois_pizzeria or "—"
     current_idx = pizzeria_names.index(current_name) if current_name in pizzeria_names else 0
 
@@ -488,6 +496,11 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
         inv.dodois_pizzeria = new_pizzeria
         session.commit()
         st.rerun()
+
+    # ── Supplier-gating: only show upload UI if supplier is configured ──────
+    if not is_dodois_supplier_enabled(session, inv.sender_oib):
+        st.caption("Auto-upload is not configured for this supplier.")
+        return
 
     # ── Parse XML ────────────────────────────────────────────────────────────
     storage = get_storage_config(cfg)
@@ -510,10 +523,28 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
 
     issues = validate_invoice(session, inv, ubl)
 
-    # ── Checklist ────────────────────────────────────────────────────────────
+    # ── Count mapped/unmapped lines ──────────────────────────────────────────
+    from app.db.models import get_product_mapping
     mapping = session.query(SupplierMapping).filter_by(
         eracun_oib=inv.sender_oib, enabled=True
     ).first()
+
+    unmapped_names: list[str] = []
+    total_lines = 0
+    for line in ubl.lines:
+        desc = (line.item_name or line.description or "").strip()
+        if not desc:
+            continue
+        total_lines += 1
+        pm = get_product_mapping(
+            session, mapping.id, desc, line.standard_item_id or None,
+        )
+        if not pm or not pm.dodois_raw_material_id:
+            unmapped_names.append(desc)
+    n_unmapped = len(unmapped_names)
+    n_mapped = total_lines - n_unmapped
+
+    # ── Checklist ────────────────────────────────────────────────────────────
     supplier_label = mapping.dodois_supplier.dodois_name if (mapping and mapping.dodois_supplier) else inv.sender_name
     st.markdown(f"✅ Supplier configured ({supplier_label})")
 
@@ -522,25 +553,18 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
     else:
         st.markdown("❌ Pizzeria not selected")
 
-    unmapped_issues = [i for i in issues if "маппинга" in i.lower()]
-    if unmapped_issues:
-        # rewrite Russian issue text to English
-        n = unmapped_issues[0].split()[0]
-        names_part = unmapped_issues[0].split(": ", 1)[-1] if ": " in unmapped_issues[0] else ""
-        st.markdown(f"❌ {n} products without mapping: {names_part}")
-        st.caption("→ Mappings → Products")
+    if n_unmapped == 0:
+        st.markdown(f"✅ All {total_lines} products mapped")
     else:
-        st.markdown(f"✅ All {len(ubl.lines)} products mapped")
+        preview = ", ".join(unmapped_names[:3])
+        suffix = f" and {n_unmapped - 3} more" if n_unmapped > 3 else ""
+        st.markdown(f"❌ {n_unmapped} products without mapping: {preview}{suffix}")
+        st.caption("→ Mappings → Products")
 
-    # ── Upload button ────────────────────────────────────────────────────────
-    ready = len(issues) == 0
-    if st.button(
-        "⬆ Upload to Dodois",
-        key=f"upload_{inv.id}",
-        type="primary",
-        disabled=not ready,
-        use_container_width=True,
-    ):
+    # ── Upload buttons ───────────────────────────────────────────────────────
+    pizzeria_ok = inv.dodois_pizzeria is not None
+
+    def _do_upload(skip_unmapped: bool):
         from app.core.dodois_auth import DodoisSession
         from app.core.dodois_client import DodoisClient
 
@@ -558,14 +582,69 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
                     dodois_cfg.get("totp_secret", ""),
                 )
                 client = DodoisClient(ds)
-                supply_id = upload_invoice(session, inv, ubl, client, pizzeria_cfg)
-                st.success(f"Done! Supply ID: {supply_id[:24]}...")
+                supply_id, skipped = upload_invoice(
+                    session, inv, ubl, client, pizzeria_cfg,
+                    skip_unmapped=skip_unmapped,
+                )
+                if skipped:
+                    st.success(
+                        f"Uploaded {n_mapped}/{total_lines} lines "
+                        f"(skipped {len(skipped)}). Supply ID: {supply_id[:24]}..."
+                    )
+                else:
+                    st.success(f"Done! Supply ID: {supply_id[:24]}...")
                 st.rerun()
             except Exception as e:
                 inv.processing_status = "error"
                 inv.processing_error = str(e)
                 session.commit()
                 st.error(f"Upload failed: {e}")
+
+    if n_unmapped == 0:
+        # Fully mapped — single clean upload button
+        if st.button(
+            "⬆ Upload to Dodois",
+            key=f"upload_{inv.id}",
+            type="primary",
+            disabled=not pizzeria_ok,
+            use_container_width=True,
+        ):
+            _do_upload(skip_unmapped=False)
+    else:
+        # Some lines unmapped — two-stage partial upload with confirmation
+        confirm_key = f"confirm_partial_{inv.id}"
+        if st.session_state.get(confirm_key):
+            st.warning(
+                f"Upload only {n_mapped}/{total_lines} lines? "
+                f"{n_unmapped} unmapped lines will be skipped."
+            )
+            col_yes, col_no = st.columns(2)
+            if col_yes.button(
+                "Yes, upload partial",
+                key=f"partial_yes_{inv.id}",
+                type="primary",
+                use_container_width=True,
+            ):
+                st.session_state[confirm_key] = False
+                _do_upload(skip_unmapped=True)
+            if col_no.button(
+                "Cancel",
+                key=f"partial_no_{inv.id}",
+                use_container_width=True,
+            ):
+                st.session_state[confirm_key] = False
+                st.rerun()
+        else:
+            can_partial = pizzeria_ok and n_mapped > 0
+            if st.button(
+                f"⚠ Upload partial ({n_mapped}/{total_lines})",
+                key=f"upload_partial_{inv.id}",
+                type="primary",
+                disabled=not can_partial,
+                use_container_width=True,
+            ):
+                st.session_state[confirm_key] = True
+                st.rerun()
 
 
 def render_invoice_detail(inv: Invoice, session):

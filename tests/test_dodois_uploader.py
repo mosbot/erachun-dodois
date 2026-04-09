@@ -120,8 +120,9 @@ def test_build_supply_payload_structure(session, metro_mapping, metro_catalog, j
                     tax_percent=25, tax_amount=11.74),
     ])
     pizzeria_cfg = {"unit_id": "unit-zagreb-1", "department_id": "dept-1"}
-    payload = build_supply_payload(session, inv, ubl, pizzeria_cfg)
+    payload, skipped = build_supply_payload(session, inv, ubl, pizzeria_cfg)
 
+    assert skipped == []
     assert "id" in payload and len(payload["id"]) == 32
     assert payload["invoiceNumber"] == "2315/11/6005"
     assert payload["commercialInvoiceNumber"] == "2315/11/6005"
@@ -154,8 +155,9 @@ def test_build_supply_payload_aggregates_duplicates(session, metro_mapping, metr
         UBLLineItem(item_name="JALAPENO", quantity=1, line_total=2.61, tax_percent=25, tax_amount=0.65),
     ])
     pizzeria_cfg = {"unit_id": "unit-1", "department_id": "dept-1"}
-    payload = build_supply_payload(session, inv, ubl, pizzeria_cfg)
+    payload, skipped = build_supply_payload(session, inv, ubl, pizzeria_cfg)
 
+    assert skipped == []
     assert len(payload["supplyItems"]) == 1
     assert payload["supplyItems"][0]["quantity"] == 3
 
@@ -176,10 +178,14 @@ def test_upload_invoice_sets_supply_id(session, metro_mapping, metro_catalog, ja
     mock_client = MagicMock()
     mock_client.create_supply.return_value = {"id": "returned-supply-id-abc123"}
 
-    supply_id = upload_invoice(session, inv, ubl, mock_client, pizzeria_cfg)
+    supply_id, skipped = upload_invoice(session, inv, ubl, mock_client, pizzeria_cfg)
 
     assert supply_id == "returned-supply-id-abc123"
+    assert skipped == []
     assert inv.dodois_supply_id == "returned-supply-id-abc123"
+    assert inv.dodois_upload_partial is False
+    assert inv.dodois_skipped_count == 0
+    assert inv.dodois_skipped_lines is None
     assert inv.processing_status == "uploaded_to_dodois"
     mock_client.create_supply.assert_called_once()
 
@@ -200,3 +206,88 @@ def test_upload_invoice_raises_on_api_error(session, metro_mapping, metro_catalo
 
     with pytest.raises(Exception, match="API error 422"):
         upload_invoice(session, inv, ubl, mock_client, pizzeria_cfg)
+
+
+# ── Partial upload (skip_unmapped) ────────────────────────────────────────────
+
+def test_build_supply_payload_unmapped_raises_by_default(
+    session, metro_mapping, metro_catalog, jalapeno_pm, jalapeno_material
+):
+    inv = make_invoice()
+    ubl = make_ubl([
+        UBLLineItem(item_name="JALAPENO", quantity=1, line_total=5.0,
+                    tax_percent=25, tax_amount=1.25),
+        UBLLineItem(item_name="UnknownThing", quantity=2, line_total=10.0,
+                    tax_percent=25, tax_amount=2.5),
+    ])
+    pizzeria_cfg = {"unit_id": "unit-1", "department_id": "dept-1"}
+    with pytest.raises(ValueError, match="No mapping for line: UnknownThing"):
+        build_supply_payload(session, inv, ubl, pizzeria_cfg)
+
+
+def test_build_supply_payload_skip_unmapped(
+    session, metro_mapping, metro_catalog, jalapeno_pm, jalapeno_material
+):
+    inv = make_invoice()
+    ubl = make_ubl([
+        UBLLineItem(item_name="JALAPENO", quantity=18, line_total=46.98,
+                    tax_percent=25, tax_amount=11.74),
+        UBLLineItem(item_name="Mystery widget", quantity=2, line_total=10.0,
+                    tax_percent=25, tax_amount=2.5),
+        UBLLineItem(item_name="Another unknown", quantity=1, line_total=3.0,
+                    tax_percent=25, tax_amount=0.75),
+    ])
+    pizzeria_cfg = {"unit_id": "unit-1", "department_id": "dept-1"}
+    payload, skipped = build_supply_payload(
+        session, inv, ubl, pizzeria_cfg, skip_unmapped=True,
+    )
+
+    assert len(payload["supplyItems"]) == 1
+    assert payload["supplyItems"][0]["rawMaterialId"] == "mat-jalapeno"
+    assert skipped == ["Mystery widget", "Another unknown"]
+
+
+def test_build_supply_payload_empty_after_skip_raises(
+    session, metro_mapping, metro_catalog
+):
+    inv = make_invoice()
+    ubl = make_ubl([
+        UBLLineItem(item_name="Nothing mapped", quantity=1, line_total=5.0,
+                    tax_percent=25, tax_amount=1.25),
+    ])
+    pizzeria_cfg = {"unit_id": "unit-1", "department_id": "dept-1"}
+    with pytest.raises(ValueError, match="No mapped lines to upload"):
+        build_supply_payload(
+            session, inv, ubl, pizzeria_cfg, skip_unmapped=True,
+        )
+
+
+def test_upload_invoice_partial_persists_skipped(
+    session, metro_mapping, metro_catalog, jalapeno_pm, jalapeno_material
+):
+    import json as _json
+    inv = make_invoice()
+    inv.issue_date = datetime(2026, 1, 28)
+    session.add(inv)
+    session.flush()
+
+    ubl = make_ubl([
+        UBLLineItem(item_name="JALAPENO", quantity=5, line_total=25.0,
+                    tax_percent=25, tax_amount=6.25),
+        UBLLineItem(item_name="Ghost product", quantity=1, line_total=1.0,
+                    tax_percent=25, tax_amount=0.25),
+    ])
+    pizzeria_cfg = {"unit_id": "unit-1", "department_id": "dept-1"}
+    mock_client = MagicMock()
+    mock_client.create_supply.return_value = {"id": "supply-partial-xyz"}
+
+    supply_id, skipped = upload_invoice(
+        session, inv, ubl, mock_client, pizzeria_cfg, skip_unmapped=True,
+    )
+
+    assert supply_id == "supply-partial-xyz"
+    assert skipped == ["Ghost product"]
+    assert inv.dodois_upload_partial is True
+    assert inv.dodois_skipped_count == 1
+    assert _json.loads(inv.dodois_skipped_lines) == ["Ghost product"]
+    assert inv.processing_status == "uploaded_to_dodois"

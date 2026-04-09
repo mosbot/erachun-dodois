@@ -60,6 +60,9 @@ class Invoice(Base):
     # Dodois integration
     dodois_supply_id = Column(String(64), nullable=True)
     dodois_pizzeria = Column(String(50), nullable=True)
+    dodois_upload_partial = Column(Boolean, default=False)
+    dodois_skipped_count = Column(Integer, default=0)
+    dodois_skipped_lines = Column(Text, nullable=True)  # JSON list of skipped descriptions
 
     # Timestamps from eRačun
     eracun_sent = Column(DateTime, nullable=True)
