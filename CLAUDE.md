@@ -81,10 +81,12 @@ HTTPS automatic via Caddy + Let's Encrypt. Local secrets live in `config.local.y
 - Auto-sync from eRačun API (needs credentials)
 - Authentication (bcrypt, config.yaml users)
 
-### Stage 2 (TODO):
-- For selected suppliers (configured in config.yaml), auto-upload invoices to Dodois
-- Telegram bot as alternative interface
-- User selects pizzeria (Zagreb-1 or Zagreb-2) for each invoice
+### Stage 2 (IMPLEMENTED as of 2026-04-09):
+- Auto-upload to Dodois for enabled suppliers (METRO, Pivac, …) via `dodois_uploader.upload_invoice`
+- Pizzeria selector (Zagreb-1 / Zagreb-2) in invoice detail view, partial upload supported (`skip_unmapped`)
+- Telegram notification after successful upload (`app/core/telegram_notifier.py`) — sends PDF + caption to topic
+- ProductMapping DB table (187 mappings across 9 suppliers) — CLAUDE.md hardcoded tables below are historical; real source of truth is the DB seeded via `scripts/seed_metro_mappings.py` and UI-driven mapping actions
+- Still TODO: Telegram bot as alternative command interface, background auto-sync scheduler
 
 ---
 
@@ -201,13 +203,16 @@ Currently via browser cookies (session-based). For automation, need to reverse-e
 supplier_id: "11eeeb8be458f06caf0d5b3908d3a4aa"
 supplier_oib: "38016445738"
 
+# Pivac supplier (meat — added 2026-04-09)
+supplier_id: "11f10e7e4945bd6c8a79b5471dd03c96"
+
 # Pizzerias
 zagreb-1:
   department_id: "E67B8C27D336AE8311EDE29371DEF8F6"
   unit_id: "e67b8c27d336ae8611ede2943f258e31"
 zagreb-2:
-  department_id: ""   # TODO: obtain
-  unit_id: ""         # TODO: obtain
+  department_id: "e67b8c27d336ae8311ede29371def8f6"  # SUSPECT — same UUID as zagreb-1 (case-only diff); verify in Office Manager
+  unit_id: "11efed30...fb280"                          # different from zagreb-1, inventory separation is at unit level
 
 # Tax rates
 tax_25: "c2f84413b0f6bba911ee2c6a71f95c44"
@@ -216,7 +221,11 @@ tax_5:  "7ec6687213e7bc4e11ee5e0c2fe41370"
 tax_0:  "11eef744519b7360879c21c0dc22e49c"
 ```
 
-### Product Mapping (METRO → Dodois)
+### Product Mapping (historical — authoritative source is `product_mappings` DB table)
+
+As of 2026-04-09 there are ~187 mappings across 9 suppliers in the `product_mappings` table. The tables below are kept as examples of the expected shape. New mappings are added via the Streamlit UI or regex-based seed scripts, not by editing this file.
+
+#### METRO examples
 
 | Product | rawMaterialId | containerId | unit | cSize | Notes |
 |---------|--------------|-------------|------|-------|-------|
@@ -236,6 +245,14 @@ tax_0:  "11eef744519b7360879c21c0dc22e49c"
 | Plastic bag 100pcs | 11f0ad16c3e6a934ad48e59b9522af90 | 11f0ad16b819997cbcd56d3dbffe1170 | 1 | 100 | |
 | Baking paper 8m | 11f04c6ce021468f916d5998122c3167 | 11f04c6ca01ac1708f541944dd2b0b50 | 8 (m) | 8 | |
 
+#### Pivac examples (added 2026-04-09)
+
+| Product | rawMaterialId | containerId | unit | cSize | Notes |
+|---------|--------------|-------------|------|-------|-------|
+| Kulen narezak 500g (471883) | 11f10e7e8f2ed5b383fca9b33b7f2121 | 11f10e7e94c7f591e161f6538d779a90 | 5 | 500 | |
+| Dalmatinska panceta narezak 500g (471655) | 11f10e7f05928995a378cee57d2885bb | 11f10e7e94c7f591e161f653e8816ba0 | 5 | 500 | |
+| Pizza Šunka Rezana (472022) | 11f10e7e7aeefa2f81c4140d847a832c | **null** | 5 (g) | — | **Weighed, no container** — quantity goes in grams, see Price Calculation §weight-no-container |
+
 ### Price Calculation Formula
 
 **CRITICAL — the API validates prices strictly:**
@@ -253,16 +270,32 @@ pricePerUnit = round(totalPrice / (qty * containerSize), 2)
 
 **Exception: Vindi Sok** — uses `containerId: null` (pcs without container). Formula becomes simply `totalPrice / qty`.
 
+**§weight-no-container (Pivac case)** — raw material with `materialType.unitOfMeasure=5` AND `containers: []` (e.g. Pizza Šunka Rezana):
+```python
+# quantity field in payload MUST BE IN GRAMS (integer-like), not kilograms.
+# If XML delivers qty in KGM, multiply by 1000 before sending.
+qty_grams = xml_qty_kg * 1000
+pricePerUnitWithoutVat = round(totalPriceWithoutVat / (qty_grams / 1000), 2)  # i.e. price per kg
+```
+If you send the XML KGM value (e.g. 30.176) as-is, the server rounds it to 0.03 internally and bounces the request with `SUPPLY_ITEM_PRICE_PER_UNIT_WITHOUT_VAT_WRONG_CALCULATION`. Helper: `dodois_uploader._compute_supply_quantity`. Detect weighed-no-container materials via `GET .../rawmaterials` → `materialType.unitOfMeasure == 5 && containers == []`.
+
 ### Lessons Learned (Dodois)
 
 1. **Supply POST requires `id` field** — generate with `uuid.uuid4().hex`
 2. **API recalculates pricePerUnit** — it uses totalPrice / (qty × containerSize) internally and validates against what you send
 3. **Container selection matters** — Vindi Sok must use "pcs" (no container), NOT "Package 24 pcs". Using the package container causes price to be divided by 24 twice.
-4. **Duplicate check** — Before creating a supply, check existing supplies by invoice number to avoid duplicates
+4. **Duplicate check (NOT YET IMPLEMENTED — tech debt)** — CLAUDE.md requires it, but `upload_invoice` doesn't do it. In the 2026-04-09 Pivac hotfix session, client-side retries after server-side failures created 6+ duplicate supplies on Dodois for the same invoice. Fix: before POST, call `GET supplies?from=invoice_date-1&to=+1`, match by `invoiceNumber + supplierId`, return existing id if found and not `isRemoved`.
 5. **Invoice number format** — eRačun uses "2315/11/6005", manual Dodois entry might format it differently as "6/0(011)0005/002315". Both are accepted by API.
 6. **`vatValue` = actual VAT amount in €**, NOT percentage. Example: 25% VAT on 31.89€ → `vatValue: 7.97` (not 25)
 7. **`commercialInvoiceNumber` and `commercialInvoiceDate` are required** — set equal to `invoiceNumber` / `invoiceDate`
 8. **Supplies list endpoint** — `GET /Accounting/v1/incomingstock/departments/{dept}/supplies?from=YYYY-MM-DD&to=YYYY-MM-DD`
+9. **Successful POST returns empty body** — `/incomingstock/supplies` answers 2xx with NO content on success. Naïve `response.json()` raises `JSONDecodeError` and the caller loses the supply_id **even though the supply was actually created** (→ duplicates on retry). Client MUST do `if not r.text.strip(): return {}` and the caller must fall back to the `id` it generated in the payload. Fixed in commit `0b27a89`.
+10. **Error body formats vary & mislead** — on 400 you may get:
+    - `{"Errors": {"SUPPLY_ITEM_TOTAL_PRICE_WITH_VAT_WRONG_CALCULATION": [{"ExpectedValue": "84.6", "ActualValue": "84.6", ...}]}}` — Expected/Actual can look **identical** because the server formats with low precision; the real check runs deeper (e.g. `pricePerUnitWithVat = pricePerUnitWithoutVat × (1 + taxRate)`) and the error name points to the wrong field.
+    - `{"errors": {"unitId": ["Error converting value \"\" to type 'Dodo.Primitives.Uuid'."]}}` — .NET ModelState format for missing/empty required fields.
+    - Always surface the raw body on failure — `dodois_client.create_supply` now raises `RuntimeError` with the full body (commit `184a775`), don't regress to `raise_for_status()`.
+11. **Per-line TaxAmount may be missing** — Pivac's Croatian UBL puts `<cac:TaxTotal>/<cbc:TaxAmount>` ONLY at document level; `<cac:InvoiceLine>` carries just `<cac:ClassifiedTaxCategory>/<cbc:Percent>`. Uploader must fall back to `tax_amount = line_total × tax_percent / 100` when XML line-level VAT is 0, else payload goes out with `vatValue=0 + taxId=25%` and is rejected. Fixed in commit `782fbd5`.
+12. **`config.local.yaml` empty-string override footgun** — `_deep_merge` in `app/core/config_loader.py` overwrites base keys with ANY override value, including `""`. Stale `zagreb-2.department_id: ''` in the server's `config.local.yaml` silently nuked the real value from `config.yaml` and caused `unitId` validation errors. When diagnosing config issues on the server, diff both files — do NOT trust `config.yaml` alone.
 
 ### Supply POST Payload Structure
 ```json
@@ -297,25 +330,23 @@ pricePerUnit = round(totalPrice / (qty * containerSize), 2)
 
 ## TODO
 
-### Immediate:
-- [ ] Get eRačun API credentials (email integracije@moj-eracun.hr)
-- [ ] Get Zagreb-2 department_id and unit_id from Dodois
-- [ ] Deploy to VPS with Docker
-- [ ] Test eRačun sync with real credentials
-- [ ] Generate proper bcrypt password hashes for users
+### Done (historical reference):
+- [x] eRačun API credentials obtained (prod: 433737 / demo: 13272)
+- [x] Deploy to VPS with Docker — running on `er.dodotool.com` behind Caddy + HTTPS
+- [x] `dodois_client.py` / `dodois_uploader.py` implemented with 16+ tests
+- [x] Dodois upload UI with pizzeria selector + partial upload
+- [x] Telegram notification after successful upload
+- [x] Support for 9 suppliers beyond METRO (Pivac added 2026-04-09)
 
-### Stage 2:
-- [ ] Build `dodois_client.py` — REST API client for creating supplies
-- [ ] Build `product_matcher.py` — match invoice lines to Dodois raw materials (EAN first, then name substring)
-- [ ] Build `price_calculator.py` — calculate prices per unit using container formula
-- [ ] Add Dodois upload button in Streamlit UI with pizzeria selector (Zagreb-1/Zagreb-2)
-- [ ] Build Telegram bot (`app/bot.py`)
-- [ ] Add background scheduler for auto-sync (APScheduler)
-- [ ] Add nginx reverse proxy with HTTPS (Let's Encrypt)
+### Tech debt (from 2026-04-09 Pivac session — see `project_dodois_tech_debt.md`):
+- [ ] **Duplicate-check in `upload_invoice` before POST** — see Lessons Learned §4. 6+ duplicate supplies were created for a single Pivac invoice during the retry storm. Use `get_all_supplies(dept, issue_date-1, issue_date+1)` + match on `invoiceNumber + supplierId + not isRemoved`.
+- [ ] **Verify Zagreb-2 `department_id`** — current value is just the Zagreb-1 UUID in lowercase, which is case-insensitively identical. Unit_id differs, so inventory may still be separated, but confirm in Office Manager UI or with Dodois integration team.
+- [ ] **Decide `_deep_merge` behaviour for empty override values** — empty strings in `config.local.yaml` silently nuke valid base values. Either patch merge logic to ignore `""` / `None`, or enforce a lint step on deploy.
 
-### Future:
-- [ ] Support more suppliers beyond METRO
-- [ ] Auto-match new products (fuzzy name matching)
+### Still open from Stage 2 scope:
+- [ ] Telegram **bot** as alternative command interface (`app/bot.py`) — currently only outbound notifications exist
+- [ ] Background scheduler for auto-sync (APScheduler)
+- [ ] Fuzzy auto-matching of new products (current matching is EAN → exact name → regex seed)
 - [ ] Invoice approval workflow
 - [ ] Financial reporting / analytics dashboard
 
