@@ -103,6 +103,13 @@ def test_price_per_unit_no_container():
     assert _compute_price_per_unit(24.0, 24, mat) == 1.0
 
 
+def test_price_per_unit_weighed_no_container():
+    # Pivac ham (no container, unit=5), 30.176 kg → 30176 g, €129.76
+    # Price per kg = 129.76 / 30.176 ≈ 4.30
+    mat = SimpleNamespace(dodois_container_id=None, unit=5, container_size=1.0)
+    assert _compute_price_per_unit(129.76, 30176, mat) == 4.3
+
+
 def test_price_per_unit_meters():
     # Baking paper 8m, 3 rolls, €12.0 — divisor = 3 * 8 = 24
     mat = SimpleNamespace(dodois_container_id="c", unit=8, container_size=8.0)

@@ -79,14 +79,34 @@ def _aggregate_lines(lines: list) -> list:
     return result
 
 
-def _compute_price_per_unit(total_price: float, qty: float, mat) -> float:
-    """Calculate pricePerUnit using Dodois container formula."""
+def _compute_supply_quantity(line, mat) -> float:
+    """Transform the XML line quantity into what Dodois expects in the payload.
+
+    For weighed materials (unit=5 grams, no container) Dodois stores quantity
+    in grams, so a KGM line must be scaled ×1000. Everything else (containers,
+    piece-count materials) passes through as-is.
+    """
+    if mat.dodois_container_id is None and mat.unit == 5:
+        if (line.unit_code or "").upper() == "KGM":
+            return line.quantity * 1000
+    return line.quantity
+
+
+def _compute_price_per_unit(total_price: float, qty_payload: float, mat) -> float:
+    """Calculate pricePerUnit using Dodois container formula.
+
+    ``qty_payload`` is the quantity value that will be sent in the payload,
+    i.e. already transformed by ``_compute_supply_quantity``.
+    """
     if mat.dodois_container_id is None:
-        divisor = qty
+        if mat.unit == 5:  # weighed (grams) → price per kg
+            divisor = qty_payload / 1000
+        else:  # piece count (Vindi Sok, unit=1)
+            divisor = qty_payload
     elif mat.unit == 5:  # grams → price per kg
-        divisor = qty * mat.container_size / 1000
+        divisor = qty_payload * mat.container_size / 1000
     else:  # unit=1 (pcs) or unit=8 (meters)
-        divisor = qty * mat.container_size
+        divisor = qty_payload * mat.container_size
     return round(total_price / divisor, 2)
 
 
@@ -135,16 +155,17 @@ def build_supply_payload(
         vat_value = round(raw_tax_amount, 2)
         tax_id = TAX_RATE_IDS.get(int(line.tax_percent), TAX_RATE_IDS[25])
 
+        qty_payload = _compute_supply_quantity(line, mat)
         supply_items.append({
-            "quantity": line.quantity,
+            "quantity": qty_payload,
             "rawMaterialId": mat.dodois_material_id,
             "rawMaterialContainerId": mat.dodois_container_id,
             "taxId": tax_id,
             "vatValue": vat_value,
             "totalPriceWithVat": total_with_vat,
             "totalPriceWithoutVat": total_without_vat,
-            "pricePerUnitWithVat": _compute_price_per_unit(total_with_vat, line.quantity, mat),
-            "pricePerUnitWithoutVat": _compute_price_per_unit(total_without_vat, line.quantity, mat),
+            "pricePerUnitWithVat": _compute_price_per_unit(total_with_vat, qty_payload, mat),
+            "pricePerUnitWithoutVat": _compute_price_per_unit(total_without_vat, qty_payload, mat),
         })
 
     if not supply_items:
