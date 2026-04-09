@@ -5,6 +5,7 @@ import json
 import uuid
 from collections import defaultdict
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
 
 from app.core.ubl_parser import UBLInvoice, UBLLineItem
 from app.db.models import Invoice, SupplierMapping, get_product_mapping
@@ -15,6 +16,19 @@ TAX_RATE_IDS = {
     5:  "7ec6687213e7bc4e11ee5e0c2fe41370",
     0:  "11eef744519b7360879c21c0dc22e49c",
 }
+
+_CENT = Decimal("0.01")
+
+
+def _round2(value) -> float:
+    """Round to 2 decimals using HALF_UP (matches the Dodois .NET server).
+
+    Python's float ``round()`` uses banker's rounding on imprecise floats
+    (e.g. ``round(1.075, 2) == 1.07`` because 1.075 is stored as 1.0749999…),
+    which diverges from Dodois at half-cent boundaries and causes
+    ``SUPPLY_ITEM_PRICE_PER_UNIT_WITH_VAT_WRONG_CALCULATION`` rejections.
+    """
+    return float(Decimal(str(value)).quantize(_CENT, rounding=ROUND_HALF_UP))
 
 
 def validate_invoice(session, invoice: Invoice, ubl: UBLInvoice) -> list:
@@ -96,18 +110,24 @@ def _compute_price_per_unit(total_price: float, qty_payload: float, mat) -> floa
     """Calculate pricePerUnit using Dodois container formula.
 
     ``qty_payload`` is the quantity value that will be sent in the payload,
-    i.e. already transformed by ``_compute_supply_quantity``.
+    i.e. already transformed by ``_compute_supply_quantity``. Arithmetic is
+    done with :class:`~decimal.Decimal` + ``ROUND_HALF_UP`` so the result
+    matches the Dodois server at half-cent boundaries.
     """
+    total = Decimal(str(total_price))
+    qty = Decimal(str(qty_payload))
+    cs = Decimal(str(mat.container_size))
+
     if mat.dodois_container_id is None:
         if mat.unit == 5:  # weighed (grams) → price per kg
-            divisor = qty_payload / 1000
+            divisor = qty / Decimal("1000")
         else:  # piece count (Vindi Sok, unit=1)
-            divisor = qty_payload
+            divisor = qty
     elif mat.unit == 5:  # grams → price per kg
-        divisor = qty_payload * mat.container_size / 1000
+        divisor = qty * cs / Decimal("1000")
     else:  # unit=1 (pcs) or unit=8 (meters)
-        divisor = qty_payload * mat.container_size
-    return round(total_price / divisor, 2)
+        divisor = qty * cs
+    return float((total / divisor).quantize(_CENT, rounding=ROUND_HALF_UP))
 
 
 def build_supply_payload(
@@ -144,18 +164,32 @@ def build_supply_payload(
             raise ValueError(f"No mapping for line: {desc}")
         mat = pm.raw_material
 
-        total_without_vat = round(line.line_total, 2)
+        total_without_vat = _round2(line.line_total)
         # Some Croatian suppliers (e.g. Pivac) omit per-line TaxAmount and only
         # report it at document level. Fall back to computing it from the
         # classified tax rate when the parser didn't pick one up.
         raw_tax_amount = line.tax_amount
         if raw_tax_amount <= 0 and line.tax_percent > 0:
             raw_tax_amount = line.line_total * line.tax_percent / 100
-        total_with_vat = round(total_without_vat + raw_tax_amount, 2)
-        vat_value = round(raw_tax_amount, 2)
+        vat_value = _round2(raw_tax_amount)
+        total_with_vat = _round2(Decimal(str(total_without_vat)) + Decimal(str(vat_value)))
         tax_id = TAX_RATE_IDS.get(int(line.tax_percent), TAX_RATE_IDS[25])
 
         qty_payload = _compute_supply_quantity(line, mat)
+        # Compute pricePerUnitWithoutVat from totals, then DERIVE
+        # pricePerUnitWithVat from it via the same formula the Dodois server
+        # uses for validation: ppuWithVat = ppuWithoutVat × (1 + taxRate).
+        # Computing pricePerUnitWithVat independently via totalPriceWithVat /
+        # divisor drifts by €0.01 whenever the supplier's XML vatAmount is off
+        # from the strict formula, triggering
+        # SUPPLY_ITEM_PRICE_PER_UNIT_WITH_VAT_WRONG_CALCULATION.
+        ppu_without_vat = _compute_price_per_unit(total_without_vat, qty_payload, mat)
+        tax_multiplier = Decimal("1") + Decimal(str(line.tax_percent)) / Decimal("100")
+        ppu_with_vat = float(
+            (Decimal(str(ppu_without_vat)) * tax_multiplier).quantize(
+                _CENT, rounding=ROUND_HALF_UP
+            )
+        )
         supply_items.append({
             "quantity": qty_payload,
             "rawMaterialId": mat.dodois_material_id,
@@ -164,8 +198,8 @@ def build_supply_payload(
             "vatValue": vat_value,
             "totalPriceWithVat": total_with_vat,
             "totalPriceWithoutVat": total_without_vat,
-            "pricePerUnitWithVat": _compute_price_per_unit(total_with_vat, qty_payload, mat),
-            "pricePerUnitWithoutVat": _compute_price_per_unit(total_without_vat, qty_payload, mat),
+            "pricePerUnitWithVat": ppu_with_vat,
+            "pricePerUnitWithoutVat": ppu_without_vat,
         })
 
     if not supply_items:

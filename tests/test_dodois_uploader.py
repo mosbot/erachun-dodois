@@ -116,7 +116,65 @@ def test_price_per_unit_meters():
     assert _compute_price_per_unit(12.0, 3, mat) == 0.5
 
 
+def test_price_per_unit_half_cent_rounds_half_up():
+    # Regression: invoice 2810-1-1 (Jana/Jamnica beverages) got rejected with
+    # SUPPLY_ITEM_PRICE_PER_UNIT_WITH_VAT_WRONG_CALCULATION because Python's
+    # round() gives 1.07 for 1.075 (float 1.0749999…) while the Dodois .NET
+    # server rounds HALF_UP to 1.08.
+    #
+    # Jamnica 0,5L 12-pack: totalWithVat 12.90 / (1 × 12) = 1.075 → must be 1.08
+    mat = SimpleNamespace(dodois_container_id="c", unit=1, container_size=12.0)
+    assert _compute_price_per_unit(12.90, 1, mat) == 1.08
+    # Jana Ice Tea 0,5L 6-pack: 5.85 / 6 = 0.975 → must be 0.98
+    mat6 = SimpleNamespace(dodois_container_id="c", unit=1, container_size=6.0)
+    assert _compute_price_per_unit(5.85, 1, mat6) == 0.98
+
+
 # ── build_supply_payload ─────────────────────────────────────────────────────
+
+def test_build_supply_payload_derives_price_with_vat_from_formula(
+    session, metro_mapping, metro_catalog
+):
+    """Regression for invoice 2810-1-1 Jana/Jamnica: pricePerUnitWithVat must
+    be derived from pricePerUnitWithoutVat × (1 + taxRate) using HALF_UP
+    rounding, matching the Dodois server validation formula.
+    """
+    from app.db.models import DodoisRawMaterialCatalog, ProductMapping
+
+    # Jamnica 0,5 Narančada PVC (12) — unit=1 pcs, 12-bottle pack
+    mat = DodoisRawMaterialCatalog(
+        supplier_catalog_id=metro_catalog.id,
+        dodois_material_id="mat-jamnica",
+        dodois_container_id="cont-jamnica",
+        dodois_name="Jamnica 0,5 Narancada PVC (12)",
+        unit=1,
+        container_size=12.0,
+    )
+    session.add(mat)
+    session.flush()
+    session.add(ProductMapping(
+        supplier_mapping_id=metro_mapping.id,
+        eracun_description="JAMNICA NARANCADA 0.5L",
+        dodois_raw_material_id=mat.id,
+        enabled=True,
+    ))
+    session.flush()
+
+    inv = make_invoice()
+    ubl = make_ubl([
+        UBLLineItem(
+            item_name="JAMNICA NARANCADA 0.5L",
+            quantity=1, line_total=10.32,
+            tax_percent=25, tax_amount=2.58,
+        ),
+    ])
+    pizzeria_cfg = {"unit_id": "unit-1", "department_id": "dept-1"}
+    payload, _ = build_supply_payload(session, inv, ubl, pizzeria_cfg)
+    item = payload["supplyItems"][0]
+    assert item["pricePerUnitWithoutVat"] == 0.86
+    # Server expects 0.86 × 1.25 = 1.075 → HALF_UP → 1.08 (not Python's 1.07).
+    assert item["pricePerUnitWithVat"] == 1.08
+
 
 def test_build_supply_payload_structure(session, metro_mapping, metro_catalog, jalapeno_pm, jalapeno_material):
     inv = make_invoice()
