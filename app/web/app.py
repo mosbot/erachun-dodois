@@ -583,6 +583,7 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
     def _do_upload(skip_unmapped: bool):
         from app.core.dodois_auth import DodoisSession
         from app.core.dodois_client import DodoisClient
+        from app.core.telegram_notifier import send_invoice_notification
 
         selected_key = pizzeria_keys[pizzeria_names.index(selected_name)]
         if selected_key is None:
@@ -609,6 +610,33 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
                     )
                 else:
                     st.success(f"Done! Supply ID: {supply_id[:24]}...")
+
+                # ── Fire-and-forget Telegram notification ────────────────
+                tg_cfg = cfg.get("telegram", {}) or {}
+                bot_token = tg_cfg.get("bot_token", "").strip()
+                chat_id = pizzeria_cfg.get("telegram_chat_id")
+                topic_id = pizzeria_cfg.get("telegram_topic_id")
+                if bot_token and chat_id:
+                    pdf_bytes = None
+                    pdf_filename = f"{inv.invoice_number or inv.document_nr}.pdf"
+                    if inv.pdf_path:
+                        pdf_full = Path(storage.get("pdf_dir", "/app/data/pdfs")) / inv.pdf_path
+                        if pdf_full.exists():
+                            pdf_bytes = pdf_full.read_bytes()
+                    tg_ok, tg_err = send_invoice_notification(
+                        bot_token=bot_token,
+                        chat_id=chat_id,
+                        supplier=inv.sender_name,
+                        issue_date=inv.issue_date,
+                        invoice_number=inv.invoice_number or inv.document_nr,
+                        total_with_vat=inv.total_with_vat,
+                        pdf_bytes=pdf_bytes,
+                        pdf_filename=pdf_filename,
+                        topic_id=topic_id,
+                    )
+                    if not tg_ok:
+                        st.warning(f"Uploaded OK, but Telegram notification failed: {tg_err}")
+
                 st.rerun()
             except Exception as e:
                 inv.processing_status = "error"
