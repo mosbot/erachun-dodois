@@ -5,7 +5,7 @@ Database models for e-rachun - DodoIs.
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, String, Float, Boolean, DateTime, Text,
-    ForeignKey, Index, create_engine,
+    ForeignKey, Index, create_engine, text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
@@ -76,6 +76,26 @@ class Invoice(Base):
     __table_args__ = (
         Index("ix_invoices_sender_date", "sender_name", "issue_date"),
         Index("ix_invoices_amount", "total_with_vat"),
+        # Partial unique: prevent concurrent sync from inserting the same
+        # eRačun ElectronicId twice. Manual uploads use electronic_id=0 and
+        # must be excluded from this constraint.
+        Index(
+            "uq_invoices_electronic_id",
+            "electronic_id",
+            unique=True,
+            postgresql_where=text("electronic_id > 0"),
+        ),
+        # Partial unique: prevent a supplier resending the same invoice (new
+        # ElectronicId, same invoice_number) from being ingested twice.
+        Index(
+            "uq_invoices_sender_invoice_number",
+            "sender_oib",
+            "invoice_number",
+            unique=True,
+            postgresql_where=text(
+                "invoice_number <> '' AND processing_status <> 'deleted'"
+            ),
+        ),
     )
 
     def __repr__(self):

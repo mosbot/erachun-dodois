@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.eracun_client import EracunClient, InboxItem
@@ -72,32 +73,78 @@ class InvoiceSyncService:
 
             new_count = 0
             for item in items:
-                # Check if already in DB
+                # Check if already in DB by eRačun ElectronicId (fast path)
                 existing = (
                     session.query(Invoice)
                     .filter(Invoice.electronic_id == item.electronic_id)
                     .first()
                 )
                 if existing:
-                    # Update eRačun status
+                    # Update eRačun status on existing row
                     existing.eracun_status_id = item.status_id
                     existing.eracun_status_name = item.status_name
                     existing.imported = item.imported
+                    session.commit()
                     continue
 
                 # New invoice — download and process
                 result = self._process_new_invoice(item, session)
-                if result:
-                    invoice, ubl_lines = result
-                    session.add(invoice)
-                    new_count += 1
-                    # Ensure supplier mapping row exists (creates unmapped entry if new)
-                    supplier_mapping = get_or_create_supplier_mapping(
-                        session, invoice.sender_oib, invoice.sender_name
+                if not result:
+                    continue
+                invoice, ubl_lines = result
+
+                # Secondary dedup: supplier may resend the same invoice with a
+                # new ElectronicId (seen with GLOVOAPP). Match on
+                # (sender_oib, invoice_number) before inserting.
+                if invoice.invoice_number and invoice.sender_oib:
+                    dup = (
+                        session.query(Invoice)
+                        .filter(
+                            Invoice.sender_oib == invoice.sender_oib,
+                            Invoice.invoice_number == invoice.invoice_number,
+                            Invoice.processing_status != "deleted",
+                        )
+                        .first()
                     )
-                    # Auto-register product lines as unmapped entries
-                    if ubl_lines:
-                        sync_product_mappings_from_lines(session, supplier_mapping, ubl_lines)
+                    if dup:
+                        logger.info(
+                            "Skipping resend: %s / %s (existing id=%s, new electronic_id=%s)",
+                            invoice.sender_name,
+                            invoice.invoice_number,
+                            dup.id,
+                            item.electronic_id,
+                        )
+                        # Keep eRačun status on the existing row fresh
+                        dup.eracun_status_id = item.status_id
+                        dup.eracun_status_name = item.status_name
+                        dup.imported = item.imported
+                        session.commit()
+                        continue
+
+                session.add(invoice)
+                try:
+                    session.flush()
+                except IntegrityError as e:
+                    # Concurrent sync already inserted this invoice. Roll back
+                    # the pending add and move on — the other process wins.
+                    session.rollback()
+                    logger.warning(
+                        "Concurrent insert detected for electronic_id=%s (%s): %s",
+                        item.electronic_id,
+                        invoice.invoice_number,
+                        e.orig,
+                    )
+                    continue
+
+                new_count += 1
+                # Ensure supplier mapping row exists (creates unmapped entry if new)
+                supplier_mapping = get_or_create_supplier_mapping(
+                    session, invoice.sender_oib, invoice.sender_name
+                )
+                # Auto-register product lines as unmapped entries
+                if ubl_lines:
+                    sync_product_mappings_from_lines(session, supplier_mapping, ubl_lines)
+                session.commit()
 
             log.invoices_new = new_count
             log.status = "success"
