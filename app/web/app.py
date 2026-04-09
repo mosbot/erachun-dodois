@@ -305,7 +305,16 @@ def render_invoices_page():
         .all()
     ]
 
-    f1, f2, f3 = st.columns([3, 2, 2])
+    cfg = get_config()
+    pizzeria_names = [
+        v.get("name", k)
+        for k, v in cfg.get("dodois", {}).get("pizzerias", {}).items()
+    ]
+    PIZZA_ALL = "All pizzerias"
+    PIZZA_NONE = "— (not set)"
+    pizzeria_options = [PIZZA_ALL, PIZZA_NONE] + pizzeria_names
+
+    f1, f2, f3, f4 = st.columns([3, 2, 2, 2])
     with f1:
         search_text = st.text_input(
             "Search",
@@ -319,6 +328,13 @@ def render_invoices_page():
             label_visibility="collapsed",
         )
     with f3:
+        pizzeria_filter = st.selectbox(
+            "Pizzeria",
+            pizzeria_options,
+            label_visibility="collapsed",
+            key="inv_pizzeria_filter",
+        )
+    with f4:
         date_range = st.date_input(
             "Date range",
             value=(
@@ -343,6 +359,11 @@ def render_invoices_page():
     if supplier_filter != "All suppliers":
         query = query.filter(Invoice.sender_name == supplier_filter)
 
+    if pizzeria_filter == PIZZA_NONE:
+        query = query.filter(Invoice.dodois_pizzeria.is_(None))
+    elif pizzeria_filter != PIZZA_ALL:
+        query = query.filter(Invoice.dodois_pizzeria == pizzeria_filter)
+
     if isinstance(date_range, tuple) and len(date_range) == 2:
         query = query.filter(
             Invoice.issue_date >= datetime.combine(date_range[0], datetime.min.time()),
@@ -366,7 +387,6 @@ def render_invoices_page():
         return
 
     # Build DataFrame
-    cfg = get_config()
     enabled_oibs = set(
         r[0] for r in
         session.query(SupplierMapping.eracun_oib)
