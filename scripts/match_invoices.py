@@ -9,6 +9,8 @@ Options:
     --from DATE   Start date (default: 2025-01-01)
     --to DATE     End date (default: today)
 """
+from __future__ import annotations
+
 import argparse
 import logging
 import os
@@ -27,15 +29,64 @@ logger = logging.getLogger(__name__)
 def dodois_to_eracun(inv_number: str) -> str:
     """
     Convert Dodois invoice number to eRačun format.
-    Dodois: 6/0(011)0003/004488  →  eRačun: 4488/11/6003
+    Handles multiple Dodois formats:
+      6/0(011)0003/004488  →  4488/11/6003
+      0/0(011)0003/004488  →  4488/11/0003
+      0/0 (010) 0001/008344  →  8344/10/0001  (with spaces)
+      0/0(011)/0002/025468  →  25468/11/0002  (extra slash)
+      0/0(010)000/026543   →  26543/10/0000  (no slash before A)
     Formula: C/0(0BB)0YYY/00000A  →  A/BB/CYYY
     If unrecognised, return unchanged.
     """
-    m = re.match(r"^(\d)/0\(0(\d+)\)0(\d{3})/0*(\d+)$", inv_number)
+    inv_number = inv_number.strip()
+    # Normalize: remove spaces around parentheses and slashes
+    # C/0(0BB) 0YYY/00AAAA  or  C/0(0BB)/0YYY/00AAAA  or  C/0(0BB)0YYY00AAAA
+    m = re.match(
+        r"^(\d)/0\s*\(0(\d+)\)\s*/?\s*0*(\d{3,4})\s*/?\s*0*(\d+)$",
+        inv_number,
+    )
     if m:
         c, bb, yyy, a = m.groups()
-        return f"{int(a)}/{int(bb)}/{c}{yyy}"
+        return f"{int(a)}/{int(bb)}/{c}{yyy[-3:]}"
     return inv_number
+
+
+def extract_invoice_key(inv_number: str) -> tuple[str, str] | None:
+    """
+    Extract (A, BB) key from eRačun format A/BB/CYYY.
+    Example: 4488/11/6003 → ("4488", "11")
+    These two numbers uniquely identify a METRO invoice across both systems.
+    """
+    m = re.match(r"^(\d+)/(\d+)/\d+$", inv_number.strip())
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
+def find_dodois_match(eracun_key: tuple[str, str], dodois_supplies: list) -> dict | None:
+    """
+    Find a Dodois supply matching eRačun invoice key (A, BB).
+    Searches through all Dodois formats:
+      - C/0(0BB)0YYY/00AAAA (structured)
+      - AAAA/BB/... (flat)
+      - direct eRačun format
+    Returns first matching supply dict or None.
+    """
+    a_num, bb_num = eracun_key
+
+    for supply in dodois_supplies:
+        dodois_inv = supply.get("invoiceNumber", "").strip()
+        # Try structured format: extract A and BB via dodois_to_eracun
+        converted = dodois_to_eracun(dodois_inv)
+        if converted != dodois_inv:
+            conv_key = extract_invoice_key(converted)
+            if conv_key and conv_key[0] == a_num and conv_key[1] == bb_num:
+                return supply
+        # Try direct match: eRačun number appears as-is
+        direct_key = extract_invoice_key(dodois_inv)
+        if direct_key and direct_key[0] == a_num and direct_key[1] == bb_num:
+            return supply
+    return None
 
 
 def _line_value(line, *keys):
@@ -69,26 +120,34 @@ def aggregate_ubl_lines(lines: list) -> list:
 
 
 def match_lines(ubl_lines: list, dodois_items: list,
-                qty_tol: float = 0.01, price_tol: float = 0.02) -> list:
+                price_tol: float = 0.02) -> list:
     """
-    Match Dodois supply items to aggregated UBL lines by qty + total price.
-    ubl_lines: list of dicts {description, quantity, line_total}  (already aggregated)
-    dodois_items: list of dicts {rawMaterialId, containerId, qty, totalWithVat}
+    Match Dodois supply items to aggregated UBL lines by totalPriceWithoutVat ≈ line_total.
+
+    UBL line_total is price without VAT. Dodois totalPriceWithoutVat is the same.
+    Quantity units differ (UBL: kg/pcs, Dodois: grams/pcs) so we match on price only.
+    Ambiguous matches (multiple lines with same total) are skipped.
+
+    ubl_lines: list of dicts {description, quantity, line_total}
+    dodois_items: list of dicts from Dodois API (quantity, totalPriceWithVat, totalPriceWithoutVat, ...)
     Returns: list of {description, rawMaterialId, containerId}
-    Ambiguous matches skipped.
     """
     results = []
     for item in dodois_items:
+        item_total = (
+            item.get("totalPriceWithoutVat")
+            or item.get("totalWithVat")  # fallback for tests with old keys
+            or 0
+        )
         candidates = [
             line for line in ubl_lines
-            if abs(line["quantity"] - item["qty"]) <= qty_tol
-            and abs(line["line_total"] - item["totalWithVat"]) <= price_tol
+            if abs(line["line_total"] - item_total) <= price_tol
         ]
         if len(candidates) == 1:
             results.append({
                 "description": candidates[0]["description"],
                 "rawMaterialId": item["rawMaterialId"],
-                "containerId": item.get("containerId"),
+                "containerId": item.get("rawMaterialContainerId") or item.get("containerId"),
             })
         elif len(candidates) > 1:
             logger.debug("Ambiguous: rawMaterialId=%s → %d candidates", item["rawMaterialId"], len(candidates))
@@ -170,6 +229,10 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Show changes without writing DB")
     parser.add_argument("--from", dest="from_date", default="2025-01-01")
     parser.add_argument("--to", dest="to_date", default=str(date.today()))
+    parser.add_argument("--supplier", default="METRO",
+                        help="Dodois supplier name to filter (default: METRO)")
+    parser.add_argument("--oib", default="38016445738",
+                        help="eRačun sender OIB to filter (default: METRO 38016445738)")
     args = parser.parse_args()
 
     from app.core.config_loader import load_config, get_database_url
@@ -183,7 +246,7 @@ def main():
 
     xml_dir = Path(cfg.get("storage", {}).get("xml_dir", "/app/data/xmls"))
     db_url = get_database_url(cfg)
-    session = get_session_factory(get_engine(db_url))()
+    db_session = get_session_factory(get_engine(db_url))()
 
     dodois_cfg = cfg.get("dodois", {})
     ds = DodoisSession(
@@ -194,95 +257,118 @@ def main():
     client = DodoisClient(ds)
     pizzerias = dodois_cfg.get("pizzerias", {})
 
-    # Fetch all Dodois supplies for all departments
-    all_supplies_raw = []
+    # Step 1: Get eRačun invoices for this supplier
+    eracun_invoices = (
+        db_session.query(Invoice)
+        .filter_by(sender_oib=args.oib)
+        .all()
+    )
+    logger.info("eRačun invoices for OIB %s: %d", args.oib, len(eracun_invoices))
+
+    # Step 2: Fetch all Dodois supplies, filter by supplier name
+    all_supplies = []
     for piz_key, piz in pizzerias.items():
         dept_id = piz.get("department_id", "")
         if not dept_id:
-            logger.warning("Skipping %s — no department_id", piz_key)
             continue
-        logger.info("Fetching supplies for %s (%s)…", piz_key, dept_id)
+        logger.info("Fetching Dodois supplies for %s…", piz_key)
         supplies = client.get_all_supplies(dept_id, args.from_date, args.to_date)
         logger.info("  Got %d supplies", len(supplies))
-        all_supplies_raw.extend(supplies)
+        all_supplies.extend(supplies)
 
-    # Deduplicate by (invoiceNumber, supplierId)
-    seen: set = set()
-    supplies_deduped = []
-    for s in all_supplies_raw:
-        key = (s.get("invoiceNumber"), s.get("supplierId"))
-        if key not in seen:
-            seen.add(key)
-            supplies_deduped.append(s)
-    logger.info("Unique supplies: %d (raw: %d)", len(supplies_deduped), len(all_supplies_raw))
+    dodois_supplies = [
+        s for s in all_supplies
+        if s.get("supplierName", "").upper() == args.supplier.upper()
+    ]
+    logger.info("Dodois %s supplies: %d", args.supplier, len(dodois_supplies))
 
     stats = dict(
-        supplies=len(supplies_deduped),
-        inv_matched=0, inv_not_found=0, inv_no_xml=0,
-        line_matches=0,
+        eracun_total=len(eracun_invoices),
+        dodois_total=len(dodois_supplies),
+        pairs_found=0, pairs_not_found=0, no_xml=0,
+        line_matches=0, line_ambiguous=0,
         map_new=0, map_existing=0, map_no_catalog=0,
     )
 
-    for supply_summary in supplies_deduped:
-        dodois_inv_num = supply_summary.get("invoiceNumber", "")
-        eracun_num = dodois_to_eracun(dodois_inv_num)
-
-        invoice = (
-            session.query(Invoice)
-            .filter(Invoice.invoice_number.ilike(f"%{eracun_num}%"))
-            .first()
-        )
-        if not invoice:
-            logger.debug("Not found: %s → %s", dodois_inv_num, eracun_num)
-            stats["inv_not_found"] += 1
+    # Step 3: For each eRačun invoice, find Dodois pair by invoice key
+    for invoice in eracun_invoices:
+        eracun_key = extract_invoice_key(invoice.invoice_number)
+        if not eracun_key:
+            logger.warning("Cannot parse eRačun number: %s", invoice.invoice_number)
+            stats["pairs_not_found"] += 1
             continue
-        stats["inv_matched"] += 1
 
+        dodois_match = find_dodois_match(eracun_key, dodois_supplies)
+        if not dodois_match:
+            logger.info("No Dodois pair for %s", invoice.invoice_number)
+            stats["pairs_not_found"] += 1
+            continue
+
+        stats["pairs_found"] += 1
+        logger.info(
+            "PAIR: %s ↔ %s (Dodois: %s)",
+            invoice.invoice_number,
+            dodois_match.get("invoiceNumber"),
+            dodois_match.get("id", "")[:12],
+        )
+
+        # Parse eRačun XML
         if not invoice.xml_path:
-            stats["inv_no_xml"] += 1
+            stats["no_xml"] += 1
             continue
         xml_full = xml_dir / invoice.xml_path
         if not xml_full.exists():
             logger.warning("Missing XML: %s", xml_full)
-            stats["inv_no_xml"] += 1
+            stats["no_xml"] += 1
             continue
 
         try:
             ubl = parse_ubl_xml(xml_full.read_text(encoding="utf-8"))
         except Exception as exc:
             logger.warning("Parse failed %s: %s", invoice.invoice_number, exc)
-            stats["inv_no_xml"] += 1
+            stats["no_xml"] += 1
             continue
 
         ubl_lines_agg = aggregate_ubl_lines(ubl.lines)
 
+        # Fetch Dodois supply detail
         try:
-            detail = client.get_supply_detail(supply_summary["id"])
+            detail = client.get_supply_detail(dodois_match["id"])
         except Exception as exc:
-            logger.warning("Detail fetch failed %s: %s", supply_summary.get("id"), exc)
+            logger.warning("Detail fetch failed: %s", exc)
             continue
 
         dodois_items = detail.get("supplyItems") or detail.get("items") or []
         if not dodois_items:
             continue
 
+        # Match lines by price
         matches = match_lines(ubl_lines_agg, dodois_items)
         stats["line_matches"] += len(matches)
+        stats["line_ambiguous"] += len(dodois_items) - len(matches)
 
-        counts = write_mappings(session, invoice, matches, dry_run=args.dry_run)
+        if matches:
+            logger.info("  Matched %d/%d lines", len(matches), len(dodois_items))
+            for m in matches:
+                logger.info("    %s → %s", m["description"][:40], m["rawMaterialId"][:20])
+
+        # Write mappings
+        counts = write_mappings(db_session, invoice, matches, dry_run=args.dry_run)
         stats["map_new"] += counts["new"]
         stats["map_existing"] += counts["skipped_existing"]
         stats["map_no_catalog"] += counts["skipped_no_catalog"]
 
-    session.close()
+    db_session.close()
 
     dry = " [DRY RUN]" if args.dry_run else ""
-    print(f"\n=== match_invoices{dry} ===")
-    print(f"Dodois supplies:         {stats['supplies']}")
-    print(f"Invoices matched:        {stats['inv_matched']}")
-    print(f"Invoices not found:      {stats['inv_not_found']}")
-    print(f"Invoices without XML:    {stats['inv_no_xml']}")
+    print(f"\n=== match_invoices — {args.supplier}{dry} ===")
+    print(f"eRačun invoices:         {stats['eracun_total']}")
+    print(f"Dodois supplies:         {stats['dodois_total']}")
+    print(f"Pairs found:             {stats['pairs_found']}")
+    print(f"Pairs not found:         {stats['pairs_not_found']}")
+    print(f"No XML:                  {stats['no_xml']}")
     print(f"Line matches:            {stats['line_matches']}")
+    print(f"Line unmatched:          {stats['line_ambiguous']}")
     print(f"ProductMappings new:     {stats['map_new']}")
     print(f"  already set (skipped): {stats['map_existing']}")
     print(f"  no catalog (skipped):  {stats['map_no_catalog']}")

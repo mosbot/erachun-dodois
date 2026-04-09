@@ -1125,8 +1125,9 @@ def _sync_dodois_catalog(cfg: dict):
             materials = []
 
         for mat in materials:
-            unit = mat.get("unit", 1)
-            type_name = mat.get("typeName") or mat.get("name", "")
+            mat_type = mat.get("materialType") or {}
+            unit = mat_type.get("unitOfMeasure") or mat.get("unit", 1)
+            type_name = mat.get("name", "")
             containers = mat.get("containers", [])
 
             if not containers:
