@@ -10,3 +10,12 @@ config.local.yaml
 .mcp.json
 .venv/
 *_signed*.xml
+
+# Local dev artifacts (not deployed to server)
+samples/
+screenshots/
+.playwright-mcp/
+.superpowers/
+.pytest_cache/
+.planning/
+.claude/

@@ -10,23 +10,67 @@ A web portal + Telegram bot for **Orange food business d.o.o.** (OIB: 5221907344
 
 ```
 e-rachun-dodois/
-├── docker-compose.yaml          # PostgreSQL + Streamlit app
+├── docker-compose.yaml          # Caddy + Streamlit + PostgreSQL
 ├── Dockerfile                   # Python 3.12-slim
-├── config.yaml                  # All settings, users, product mappings
+├── Caddyfile                    # Reverse proxy + auto-HTTPS (Let's Encrypt)
+├── config.yaml                  # Settings, users, product mappings (committed)
+├── config.local.yaml            # Secrets: eRačun/Dodois creds (NOT committed)
 ├── requirements.txt
-├── .streamlit/config.toml       # Streamlit theme (orange)
-├── scripts/gen_password.py      # bcrypt password hash generator
+├── .streamlit/config.toml       # Streamlit theme + fileWatcherType=none
+├── .rsync-exclude               # Deploy exclusions (protect config.local.yaml)
+│
 ├── app/
 │   ├── core/
 │   │   ├── eracun_client.py     # moj-eRačun API v2 client
 │   │   ├── ubl_parser.py        # UBL 2.1 XML parser (Croatian HR-CIUS)
 │   │   ├── invoice_sync.py      # Sync service: fetch → parse → save
-│   │   └── config_loader.py     # YAML config loader
+│   │   ├── config_loader.py     # YAML config loader (merges config + local)
+│   │   ├── dodois_auth.py       # Dodois OIDC session handler
+│   │   ├── dodois_client.py     # Dodois REST API client (suppliers, supplies)
+│   │   └── dodois_uploader.py   # Upload invoice → Dodois supply (with matching)
 │   ├── db/
-│   │   └── models.py            # SQLAlchemy models (Invoice, SyncLog)
+│   │   └── models.py            # SQLAlchemy models (Invoice, SyncLog, ProductMapping)
 │   └── web/
-│       └── app.py               # Streamlit UI (auth, invoice list, PDF viewer)
+│       └── app.py               # Streamlit UI (auth, invoice list, PDF viewer, upload)
+│
+├── scripts/
+│   ├── gen_password.py          # bcrypt password hash generator
+│   ├── fetch_dodois_catalog.py  # Fetch all raw materials from Dodois
+│   ├── sync_dodois_catalog.py   # Sync catalog to local DB
+│   ├── seed_metro_mappings.py   # Seed ProductMapping table from METRO history
+│   ├── match_invoices.py        # Cross-reference invoices ↔ supplies for auto-mapping
+│   └── debug_match.py           # Matching debug helper
+│
+├── tests/
+│   ├── conftest.py
+│   ├── test_dodois_uploader.py  # 16 tests for upload logic
+│   └── test_match_invoices.py   # Tests for invoice matching
+│
+├── data/                        # Runtime data (gitignored)
+│   ├── pdfs/                    # Extracted PDFs from UBL
+│   └── xmls/                    # Raw invoice XMLs
+│
+├── docs/                        # Project docs
+├── samples/                     # Local dev fixtures (gitignored)
+│   ├── xmls/                    # Sample signed invoice XMLs
+│   └── json/                    # Dodois API response dumps
+└── screenshots/                 # Debug screenshots (gitignored)
 ```
+
+## Deployment
+
+**Server:** `er.dodotool.com` (user: `ask`)
+**Path:** `/opt/erachun-dodois`
+**Method:** Git-based
+
+```bash
+ssh ask@er.dodotool.com
+cd /opt/erachun-dodois
+git pull
+docker compose down && docker compose up --build -d
+```
+
+HTTPS automatic via Caddy + Let's Encrypt. Local secrets live in `config.local.yaml` on the server (not in git).
 
 ## Two Stages
 
