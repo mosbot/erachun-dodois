@@ -1,3 +1,3 @@
-http://er.dodotool.com {
+er.dodotool.com {
     reverse_proxy web:8501
 }
