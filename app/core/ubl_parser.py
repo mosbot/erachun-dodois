@@ -231,6 +231,11 @@ def _detect_pizzeria(root) -> Optional[str]:
         if el is not None and el.text:
             hints.append(el.text.upper())
 
+    # OrderReference/ID (used by KRISTY — puts delivery address in purchase-order ref)
+    for oref in root.findall(".//cac:OrderReference/cbc:ID", NS):
+        if oref.text:
+            hints.append(oref.text.upper())
+
     # Note field (used by FRESCO, etc.)
     for note_el in root.findall("cbc:Note", NS):
         if note_el.text:
