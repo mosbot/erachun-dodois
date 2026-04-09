@@ -31,7 +31,9 @@ def _format_caption(
         f"📦 {supplier}\n"
         f"📅 {date_str}\n"
         f"🧾 {invoice_number}\n"
-        f"💰 {symbol}{total_with_vat:,.2f}"
+        f"💰 {symbol}{total_with_vat:,.2f}\n"
+        f"\n"
+        f"✅ Supply auto-created in Dodois — please verify."
     )
 
 

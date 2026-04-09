@@ -19,6 +19,7 @@ def test_format_caption_basic():
     assert "28.01.2026" in caption
     assert "2315/11/6005" in caption
     assert "€58.72" in caption
+    assert "Supply auto-created in Dodois — please verify." in caption
 
 
 def test_format_caption_handles_none_date():
