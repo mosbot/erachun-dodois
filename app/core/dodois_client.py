@@ -97,4 +97,12 @@ class DodoisClient:
             raise RuntimeError(
                 f"Dodois {r.status_code} {r.reason}: {body}"
             )
-        return r.json()
+        # Dodois returns 200/204 with an empty body on success — r.json() would
+        # then raise JSONDecodeError. Return an empty dict so callers can fall
+        # back to the client-generated supply id in the payload.
+        if not (r.text or "").strip():
+            return {}
+        try:
+            return r.json()
+        except ValueError:
+            return {}
