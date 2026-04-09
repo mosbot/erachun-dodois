@@ -86,5 +86,15 @@ class DodoisClient:
             json=payload,
             timeout=30
         )
-        r.raise_for_status()
+        if r.status_code >= 400:
+            body = (r.text or "")[:2000]
+            logger.error(
+                "Dodois create_supply failed: %s %s\nPayload: %s\nResponse: %s",
+                r.status_code, r.reason,
+                __import__("json").dumps(payload, ensure_ascii=False),
+                body,
+            )
+            raise RuntimeError(
+                f"Dodois {r.status_code} {r.reason}: {body}"
+            )
         return r.json()
