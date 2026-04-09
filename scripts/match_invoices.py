@@ -51,41 +51,59 @@ def dodois_to_eracun(inv_number: str) -> str:
     return inv_number
 
 
-def extract_invoice_key(inv_number: str) -> tuple[str, str] | None:
+def extract_invoice_key(inv_number: str) -> tuple[str, ...] | None:
     """
-    Extract (A, BB) key from eRačun format A/BB/CYYY.
-    Example: 4488/11/6003 → ("4488", "11")
-    These two numbers uniquely identify a METRO invoice across both systems.
+    Normalize an invoice number to a comparable tuple of parts.
+    Splits on '/' or '-', strips whitespace, drops empty parts,
+    strips leading zeros from purely numeric parts, uppercases alpha parts.
+
+    Examples:
+      "4488/11/6003"     → ("4488", "11", "6003")     # METRO
+      "2357-1-1"         → ("2357", "1", "1")         # KRISTY
+      "5854/V211/10"     → ("5854", "V211", "10")     # PIVAC
+      "00217-100-26"     → ("217", "100", "26")       # PEKARNA PEČJAK
+      "1840/IRK/26"      → ("1840", "IRK", "26")      # Granolio
+      "10304/V850/900"   → ("10304", "V850", "900")   # STANIĆ
+      "141-VP01-2"       → ("141", "VP01", "2")       # MAKROMIKRO
+      "1530-4-49051"     → ("1530", "4", "49051")     # Inter Alfa
+
+    Returns None if format is unrecognized (fewer than 2 parts).
     """
-    m = re.match(r"^(\d+)/(\d+)/\d+$", inv_number.strip())
-    if not m:
+    s = (inv_number or "").strip()
+    if not s:
         return None
-    return m.group(1), m.group(2)
+    parts = re.split(r"[/\-]", s)
+    parts = [p.strip() for p in parts if p.strip()]
+    if len(parts) < 2 or len(parts) > 5:
+        return None
+    norm: list[str] = []
+    for p in parts:
+        if p.isdigit():
+            norm.append(str(int(p)))
+        else:
+            norm.append(p.upper())
+    return tuple(norm)
 
 
-def find_dodois_match(eracun_key: tuple[str, str], dodois_supplies: list) -> dict | None:
+def find_dodois_match(eracun_key: tuple[str, ...], dodois_supplies: list) -> dict | None:
     """
-    Find a Dodois supply matching eRačun invoice key (A, BB).
-    Searches through all Dodois formats:
-      - C/0(0BB)0YYY/00AAAA (structured)
-      - AAAA/BB/... (flat)
-      - direct eRačun format
-    Returns first matching supply dict or None.
-    """
-    a_num, bb_num = eracun_key
+    Find a Dodois supply matching the eRačun invoice key tuple.
 
+    Tries direct comparison first; if that fails and the supply matches
+    METRO's encoded format C/0(0BB)0YYY/00AAAA, translates it and retries.
+    """
     for supply in dodois_supplies:
-        dodois_inv = supply.get("invoiceNumber", "").strip()
-        # Try structured format: extract A and BB via dodois_to_eracun
-        converted = dodois_to_eracun(dodois_inv)
-        if converted != dodois_inv:
-            conv_key = extract_invoice_key(converted)
-            if conv_key and conv_key[0] == a_num and conv_key[1] == bb_num:
-                return supply
-        # Try direct match: eRačun number appears as-is
-        direct_key = extract_invoice_key(dodois_inv)
-        if direct_key and direct_key[0] == a_num and direct_key[1] == bb_num:
+        dodois_inv = (supply.get("invoiceNumber") or "").strip()
+        # Path 1: direct format (KRISTY, PIVAC, ŠIMIĆ, Inter Alfa, …)
+        direct = extract_invoice_key(dodois_inv)
+        if direct is not None and direct == eracun_key:
             return supply
+        # Path 2: METRO encoded format → translate first
+        translated = dodois_to_eracun(dodois_inv)
+        if translated != dodois_inv:
+            trans = extract_invoice_key(translated)
+            if trans is not None and trans == eracun_key:
+                return supply
     return None
 
 
@@ -276,9 +294,10 @@ def main():
         logger.info("  Got %d supplies", len(supplies))
         all_supplies.extend(supplies)
 
+    needle = args.supplier.upper().strip()
     dodois_supplies = [
         s for s in all_supplies
-        if s.get("supplierName", "").upper() == args.supplier.upper()
+        if needle in s.get("supplierName", "").upper()
     ]
     logger.info("Dodois %s supplies: %d", args.supplier, len(dodois_supplies))
 

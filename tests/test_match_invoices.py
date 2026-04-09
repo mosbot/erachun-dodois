@@ -1,6 +1,72 @@
 """Tests for invoice matching logic."""
 import pytest
-from scripts.match_invoices import dodois_to_eracun, aggregate_ubl_lines, match_lines
+from scripts.match_invoices import (
+    aggregate_ubl_lines,
+    dodois_to_eracun,
+    extract_invoice_key,
+    find_dodois_match,
+    match_lines,
+)
+
+
+class TestExtractInvoiceKey:
+    def test_metro_slash_format(self):
+        assert extract_invoice_key("4488/11/6003") == ("4488", "11", "6003")
+
+    def test_kristy_dash_format(self):
+        assert extract_invoice_key("2357-1-1") == ("2357", "1", "1")
+
+    def test_pivac_alpha_middle(self):
+        assert extract_invoice_key("5854/V211/10") == ("5854", "V211", "10")
+
+    def test_leading_zeros_stripped(self):
+        assert extract_invoice_key("00217-100-26") == ("217", "100", "26")
+
+    def test_granolio_alpha(self):
+        assert extract_invoice_key("1840/IRK/26") == ("1840", "IRK", "26")
+
+    def test_makromikro(self):
+        assert extract_invoice_key("141-VP01-2") == ("141", "VP01", "2")
+
+    def test_inter_alfa(self):
+        assert extract_invoice_key("1530-4-49051") == ("1530", "4", "49051")
+
+    def test_lowercase_normalized(self):
+        assert extract_invoice_key("100/v211/10") == ("100", "V211", "10")
+
+    def test_empty_returns_none(self):
+        assert extract_invoice_key("") is None
+        assert extract_invoice_key("   ") is None
+
+    def test_single_part_returns_none(self):
+        assert extract_invoice_key("12345") is None
+
+    def test_whitespace_inside_part_kept_alpha(self):
+        # "616 7000899-25" → ("616 7000899", "25") — alpha-ish, kept as-is
+        result = extract_invoice_key("616 7000899-25")
+        assert result == ("616 7000899", "25")
+
+
+class TestFindDodoisMatch:
+    def test_direct_match(self):
+        key = extract_invoice_key("2357-1-1")
+        supplies = [{"invoiceNumber": "2357-1-1", "id": "x"}]
+        assert find_dodois_match(key, supplies) == supplies[0]
+
+    def test_metro_translated_match(self):
+        key = extract_invoice_key("4488/11/6003")
+        supplies = [{"invoiceNumber": "6/0(011)0003/004488", "id": "y"}]
+        assert find_dodois_match(key, supplies) == supplies[0]
+
+    def test_no_match(self):
+        key = extract_invoice_key("999-1-1")
+        supplies = [{"invoiceNumber": "2357-1-1"}]
+        assert find_dodois_match(key, supplies) is None
+
+    def test_alpha_middle_match(self):
+        key = extract_invoice_key("5854/V211/10")
+        supplies = [{"invoiceNumber": "5854/V211/10", "id": "p"}]
+        assert find_dodois_match(key, supplies) == supplies[0]
 
 
 class TestDodoisToEracun:
