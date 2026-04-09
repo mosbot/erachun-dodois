@@ -27,6 +27,53 @@ def test_format_caption_handles_none_date():
     assert "—" in caption
 
 
+def test_format_caption_partial_upload_has_warning():
+    caption = _format_caption(
+        "METRO", datetime(2026, 1, 28), "2810-1-1", 100.00,
+        skipped_lines=["Mystery widget", "Another unknown"],
+        total_lines=8,
+    )
+    assert "⚠️ PARTIAL upload" in caption
+    assert "6 of 8 lines" in caption
+    assert "Mystery widget" in caption
+    assert "Another unknown" in caption
+    # Full-upload success line must not appear for partial uploads.
+    assert "auto-created" not in caption
+
+
+def test_format_caption_partial_truncates_long_skipped_list():
+    skipped = [f"Item {i}" for i in range(12)]
+    caption = _format_caption(
+        "S", None, "I", 0.0,
+        skipped_lines=skipped,
+        total_lines=15,
+    )
+    # First 5 are listed verbatim, rest collapsed into "… and 7 more".
+    assert "Item 0" in caption
+    assert "Item 4" in caption
+    assert "Item 5" not in caption  # beyond the cap
+    assert "and 7 more" in caption
+
+
+def test_format_caption_partial_without_total_lines():
+    caption = _format_caption(
+        "S", None, "I", 0.0,
+        skipped_lines=["A", "B"],
+    )
+    assert "PARTIAL upload" in caption
+    assert "2 line" in caption  # "2 line(s) skipped"
+
+
+def test_format_caption_empty_skipped_list_uses_success_copy():
+    caption = _format_caption(
+        "S", None, "I", 0.0,
+        skipped_lines=[],
+        total_lines=3,
+    )
+    assert "auto-created" in caption
+    assert "PARTIAL" not in caption
+
+
 def _ok_response():
     resp = MagicMock()
     resp.status_code = 200

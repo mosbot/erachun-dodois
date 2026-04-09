@@ -639,6 +639,8 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
                         pdf_bytes=pdf_bytes,
                         pdf_filename=pdf_filename,
                         topic_id=topic_id,
+                        skipped_lines=skipped or None,
+                        total_lines=total_lines,
                     )
                     if not tg_ok:
                         st.warning(f"Uploaded OK, but Telegram notification failed: {tg_err}")

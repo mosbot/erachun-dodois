@@ -23,17 +23,46 @@ def _format_caption(
     invoice_number: str,
     total_with_vat: float,
     currency: str = "EUR",
+    skipped_lines: Optional[list[str]] = None,
+    total_lines: Optional[int] = None,
 ) -> str:
-    """Plain-text caption. No MarkdownV2 escaping hell."""
+    """Plain-text caption. No MarkdownV2 escaping hell.
+
+    If ``skipped_lines`` is non-empty, the caption becomes a ⚠️ partial-upload
+    warning listing the unmapped product names (capped at 5 + overflow count)
+    so the user knows to add them manually in Dodois.
+    """
     date_str = issue_date.strftime("%d.%m.%Y") if issue_date else "—"
     symbol = "€" if currency.upper() == "EUR" else currency
-    return (
+    header = (
         f"📦 {supplier}\n"
         f"📅 {date_str}\n"
         f"🧾 {invoice_number}\n"
         f"💰 {symbol}{total_with_vat:,.2f}\n"
-        f"\n"
-        f"✅ Supply auto-created in Dodois — please verify."
+    )
+
+    if skipped_lines:
+        n_skipped = len(skipped_lines)
+        if total_lines:
+            n_uploaded = max(total_lines - n_skipped, 0)
+            summary = f"⚠️ PARTIAL upload — {n_uploaded} of {total_lines} lines added to Dodois."
+        else:
+            summary = f"⚠️ PARTIAL upload — {n_skipped} line(s) skipped."
+        preview_items = [f"  • {name}" for name in skipped_lines[:5]]
+        if n_skipped > 5:
+            preview_items.append(f"  • … and {n_skipped - 5} more")
+        preview = "\n".join(preview_items)
+        return (
+            f"{header}"
+            f"\n{summary}\n"
+            f"Unmapped lines (add manually in Dodois):\n"
+            f"{preview}\n"
+            f"\nPlease verify in Dodois."
+        )
+
+    return (
+        f"{header}"
+        f"\n✅ Supply auto-created in Dodois — please verify."
     )
 
 
@@ -49,11 +78,17 @@ def send_invoice_notification(
     topic_id: Optional[int] = None,
     currency: str = "EUR",
     timeout: float = 15.0,
+    skipped_lines: Optional[list[str]] = None,
+    total_lines: Optional[int] = None,
 ) -> tuple[bool, Optional[str]]:
     """Send a Dodois-upload notification to a Telegram chat (optionally a topic).
 
     Returns (ok, error_message). On success error_message is None.
     If pdf_bytes is None, sends a text message instead of a document.
+
+    When ``skipped_lines`` is non-empty the caption is switched into a
+    ⚠️ PARTIAL-upload warning that lists the unmapped products so the
+    operator knows to add them by hand in Dodois.
     """
     if not bot_token:
         return False, "bot_token is empty"
@@ -62,6 +97,8 @@ def send_invoice_notification(
 
     caption = _format_caption(
         supplier, issue_date, invoice_number, total_with_vat, currency,
+        skipped_lines=skipped_lines,
+        total_lines=total_lines,
     )
 
     try:
