@@ -4,6 +4,7 @@ Main application with authentication, invoice list, search, PDF viewer.
 """
 
 import os
+import re
 import sys
 import base64
 import streamlit as st
@@ -618,7 +619,12 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
                 topic_id = pizzeria_cfg.get("telegram_topic_id")
                 if bot_token and chat_id:
                     pdf_bytes = None
-                    pdf_filename = f"{inv.invoice_number or inv.document_nr}.pdf"
+                    # Invoice numbers often contain "/" which requests' multipart
+                    # encoder treats as a path separator, so "6324/V211/10.pdf"
+                    # would hit Telegram as just "10.pdf". Replace unsafe chars.
+                    _raw_name = (inv.invoice_number or inv.document_nr or "invoice")
+                    _safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", _raw_name).strip("-") or "invoice"
+                    pdf_filename = f"{_safe_name}.pdf"
                     if inv.pdf_path:
                         pdf_full = Path(storage.get("pdf_dir", "/app/data/pdfs")) / inv.pdf_path
                         if pdf_full.exists():
