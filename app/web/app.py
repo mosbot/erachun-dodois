@@ -443,11 +443,20 @@ def _delete_invoice(inv: Invoice, storage: dict):
 
 
 def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
-    """Render Dodois upload section inside invoice detail (left column)."""
+    """Render Dodois upload section inside invoice detail (left column).
+
+    Hidden entirely when the supplier is not configured for Dodois upload —
+    unless the invoice was already uploaded in the past (in which case the
+    historical "✓ Uploaded" card is still shown).
+    """
     import json as _json
     from app.db.models import is_dodois_supplier_enabled
     from app.core.dodois_uploader import validate_invoice, upload_invoice
     from app.core.ubl_parser import parse_ubl_xml
+
+    supplier_enabled = is_dodois_supplier_enabled(session, inv.sender_oib)
+    if not supplier_enabled and not inv.dodois_supply_id:
+        return
 
     st.divider()
 
@@ -485,26 +494,9 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
 
     st.markdown("**Upload to Dodois**")
 
-    # ── Pizzeria selector (always visible, for all suppliers) ───────────────
-    current_name = inv.dodois_pizzeria or "—"
-    current_idx = pizzeria_names.index(current_name) if current_name in pizzeria_names else 0
-
-    selected_name = st.selectbox(
-        "Pizzeria",
-        pizzeria_names,
-        index=current_idx,
-        key=f"dodois_pizzeria_{inv.id}",
-    )
-    new_pizzeria = None if selected_name == "—" else selected_name
-    if new_pizzeria != inv.dodois_pizzeria:
-        inv.dodois_pizzeria = new_pizzeria
-        session.commit()
-        st.rerun()
-
-    # ── Supplier-gating: only show upload UI if supplier is configured ──────
-    if not is_dodois_supplier_enabled(session, inv.sender_oib):
-        st.caption("Auto-upload is not configured for this supplier.")
-        return
+    # Pizzeria selector lives in render_invoice_detail (above download buttons)
+    # so only the reference value is needed here.
+    selected_name = inv.dodois_pizzeria or "—"
 
     # ── Parse XML ────────────────────────────────────────────────────────────
     storage = get_storage_config(cfg)
@@ -668,10 +660,30 @@ def render_invoice_detail(inv: Invoice, session):
             unsafe_allow_html=False,
         )
 
-        # Download buttons — side by side
         cfg = get_config()
         storage = get_storage_config(cfg)
 
+        # Pizzeria selector — always visible, above download buttons.
+        # Locked once the invoice has been uploaded to Dodois.
+        dodois_cfg = cfg.get("dodois", {})
+        pizzerias = dodois_cfg.get("pizzerias", {})
+        pizzeria_names = ["—"] + [v.get("name", k) for k, v in pizzerias.items()]
+        current_name = inv.dodois_pizzeria if inv.dodois_pizzeria in pizzeria_names else "—"
+        current_idx = pizzeria_names.index(current_name)
+        selected_name = st.selectbox(
+            "Pizzeria",
+            pizzeria_names,
+            index=current_idx,
+            key=f"inv_pizzeria_{inv.id}",
+            disabled=bool(inv.dodois_supply_id),
+        )
+        new_pizzeria = None if selected_name == "—" else selected_name
+        if new_pizzeria != inv.dodois_pizzeria and not inv.dodois_supply_id:
+            inv.dodois_pizzeria = new_pizzeria
+            session.commit()
+            st.rerun()
+
+        # Download buttons — side by side
         has_pdf = inv.pdf_path and (Path(storage.get("pdf_dir", "/app/data/pdfs")) / inv.pdf_path).exists()
         has_xml = inv.xml_path and (Path(storage.get("xml_dir", "/app/data/xmls")) / inv.xml_path).exists()
 
