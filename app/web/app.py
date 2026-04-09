@@ -398,6 +398,7 @@ def render_invoices_page():
         hide_index=True,
         on_select="rerun",
         selection_mode="single-row",
+        key="invoices_table",
         column_config={
             "Amount (no VAT)": st.column_config.NumberColumn(format="€%.2f"),
             "VAT": st.column_config.NumberColumn(format="€%.2f"),
@@ -407,11 +408,14 @@ def render_invoices_page():
     )
 
     # ---- Detail / PDF viewer ----
+    # Mirror widget selection into session_state so child-widget reruns
+    # (e.g. pizzeria selectbox) don't wipe the detail view.
     if event and event.selection and event.selection.rows:
-        row_idx = event.selection.rows[0]
-        inv_id = inv_ids[row_idx]
-        inv = session.query(Invoice).get(inv_id)
+        st.session_state["selected_invoice_id"] = inv_ids[event.selection.rows[0]]
 
+    selected_inv_id = st.session_state.get("selected_invoice_id")
+    if selected_inv_id:
+        inv = session.query(Invoice).get(selected_inv_id)
         if inv:
             st.divider()
             render_invoice_detail(inv, session)
@@ -700,6 +704,7 @@ def render_invoice_detail(inv: Invoice, session):
                     if st.button("Yes, delete", key=f"del_yes_{inv.id}", type="primary", use_container_width=True):
                         _delete_invoice(inv, storage)
                         st.session_state[confirm_key] = False
+                        st.session_state.pop("selected_invoice_id", None)
                         st.rerun()
                 with col_no:
                     if st.button("Cancel", key=f"del_no_{inv.id}", use_container_width=True):
@@ -956,14 +961,20 @@ def render_supplier_mapping_section(cfg: dict):
         hide_index=True,
         on_select="rerun",
         selection_mode="single-row",
+        key="mappings_table",
         column_config={
             "Invoices": st.column_config.NumberColumn(format="%d"),
         },
     )
 
+    # Mirror widget selection into session_state so child-widget reruns
+    # (catalog selectbox, enable checkbox) don't wipe the detail view.
     if event and event.selection and event.selection.rows:
-        row_idx = event.selection.rows[0]
-        mapping = session.query(SupplierMapping).get(mapping_ids[row_idx])
+        st.session_state["selected_mapping_id"] = mapping_ids[event.selection.rows[0]]
+
+    selected_mapping_id = st.session_state.get("selected_mapping_id")
+    if selected_mapping_id:
+        mapping = session.query(SupplierMapping).get(selected_mapping_id)
 
         if mapping:
             st.divider()
@@ -1081,9 +1092,14 @@ def render_product_mapping_section(session, supplier_mapping: SupplierMapping):
         key=f"prod_table_{supplier_mapping.id}",
     )
 
+    # Mirror selection in session_state — sticky across child-widget reruns
+    sel_key = f"selected_prod_in_sup_{supplier_mapping.id}"
     if prod_event and prod_event.selection and prod_event.selection.rows:
-        prod_idx = prod_event.selection.rows[0]
-        product = session.query(ProductMapping).get(product_ids[prod_idx])
+        st.session_state[sel_key] = product_ids[prod_event.selection.rows[0]]
+
+    selected_prod_id = st.session_state.get(sel_key)
+    if selected_prod_id:
+        product = session.query(ProductMapping).get(selected_prod_id)
 
         if product:
             st.markdown(f"**{product.eracun_description}**")
@@ -1124,6 +1140,7 @@ def render_product_mapping_section(session, supplier_mapping: SupplierMapping):
                 if st.button("Delete", key=f"prod_del_{product.id}", type="secondary"):
                     session.delete(product)
                     session.commit()
+                    st.session_state.pop(sel_key, None)
                     st.rerun()
 
             prod_changed = (new_mat_id != product.dodois_raw_material_id) or (new_prod_enabled != product.enabled)
@@ -1400,9 +1417,13 @@ def render_all_products_tab():
         key="all_prod_table",
     )
 
+    # Mirror selection in session_state — sticky across child-widget reruns
     if event and event.selection and event.selection.rows:
-        prod_idx = event.selection.rows[0]
-        product = session.query(ProductMapping).get(product_ids[prod_idx])
+        st.session_state["selected_all_product_id"] = product_ids[event.selection.rows[0]]
+
+    selected_all_prod_id = st.session_state.get("selected_all_product_id")
+    if selected_all_prod_id:
+        product = session.query(ProductMapping).get(selected_all_prod_id)
 
         if product:
             st.divider()
@@ -1417,6 +1438,7 @@ def render_all_products_tab():
                 if st.button("Delete", key=f"allprod_del_nosup_{product.id}", type="secondary"):
                     session.delete(product)
                     session.commit()
+                    st.session_state.pop("selected_all_product_id", None)
                     st.rerun()
                 session.close()
                 return
@@ -1457,6 +1479,7 @@ def render_all_products_tab():
                 if st.button("Delete", key=f"allprod_del_{product.id}", type="secondary"):
                     session.delete(product)
                     session.commit()
+                    st.session_state.pop("selected_all_product_id", None)
                     st.rerun()
 
             if (new_mat_id != product.dodois_raw_material_id) or (new_enabled != product.enabled):
