@@ -1382,24 +1382,36 @@ def render_mappings_page():
 
 
 def render_all_products_tab():
-    """Products tab: all product mappings across all suppliers, with inline editing."""
+    """Products tab: product mappings for suppliers with Dodois sync enabled, with inline editing."""
     session = get_db()()
 
+    # Only suppliers with Dodois upload enabled (i.e. linked to a Dodois
+    # supplier catalog entry AND "Enable upload to Dodois" toggled on).
     all_supplier_mappings = (
         session.query(SupplierMapping)
+        .filter(SupplierMapping.enabled.is_(True))
         .order_by(SupplierMapping.eracun_name)
         .all()
     )
 
     if not all_supplier_mappings:
-        st.info("No suppliers yet. Import invoices first.")
+        st.info(
+            "No suppliers have Dodois sync enabled yet. "
+            "Enable a supplier on the **Suppliers** tab first."
+        )
         session.close()
         return
 
-    # Metrics
-    total = session.query(ProductMapping).count()
+    enabled_ids = [m.id for m in all_supplier_mappings]
+    st.caption(f"Showing products for {len(all_supplier_mappings)} supplier(s) with Dodois sync enabled.")
+
+    # Metrics — limited to enabled suppliers
+    total = session.query(ProductMapping).filter(
+        ProductMapping.supplier_mapping_id.in_(enabled_ids)
+    ).count()
     mapped = session.query(ProductMapping).filter(
-        ProductMapping.dodois_raw_material_id.isnot(None)
+        ProductMapping.supplier_mapping_id.in_(enabled_ids),
+        ProductMapping.dodois_raw_material_id.isnot(None),
     ).count()
     unmapped = total - mapped
 
@@ -1409,7 +1421,7 @@ def render_all_products_tab():
     col3.metric("Unmapped", unmapped)
 
     if total == 0:
-        st.info("No product entries yet. Import invoices — lines will appear here automatically.")
+        st.info("No product entries yet for enabled suppliers. Import their invoices — lines will appear here automatically.")
         session.close()
         return
 
@@ -1417,13 +1429,19 @@ def render_all_products_tab():
 
     # Supplier filter
     sup_options = ["All suppliers"] + [m.eracun_name for m in all_supplier_mappings]
+    # Drop stale session_state values that point to a now-disabled supplier —
+    # otherwise Streamlit raises because the widget's stored value is not in options.
+    if st.session_state.get("prod_sup_filter") not in sup_options:
+        st.session_state.pop("prod_sup_filter", None)
     sup_filter = st.selectbox("Filter by supplier", sup_options, key="prod_sup_filter")
 
     # Show only unmapped toggle
     only_unmapped = st.checkbox("Show only unmapped", key="prod_only_unmapped")
 
-    # Build query
-    q = session.query(ProductMapping)
+    # Build query — always constrain to enabled suppliers
+    q = session.query(ProductMapping).filter(
+        ProductMapping.supplier_mapping_id.in_(enabled_ids)
+    )
     if sup_filter != "All suppliers":
         sm = next((m for m in all_supplier_mappings if m.eracun_name == sup_filter), None)
         if sm:
@@ -1440,6 +1458,8 @@ def render_all_products_tab():
     # Add product manually
     with st.expander("Add product mapping manually"):
         sup_names = [m.eracun_name for m in all_supplier_mappings]
+        if st.session_state.get("man_prod_sup") not in sup_names:
+            st.session_state.pop("man_prod_sup", None)
         man_sup = st.selectbox("Supplier", sup_names, key="man_prod_sup")
         man_desc = st.text_input("eRačun description", placeholder="Exact or partial text from invoice line", key="man_prod_desc")
         man_ean = st.text_input("EAN (optional)", placeholder="e.g. 3800023456789", key="man_prod_ean")
