@@ -176,20 +176,15 @@ def build_supply_payload(
         tax_id = TAX_RATE_IDS.get(int(line.tax_percent), TAX_RATE_IDS[25])
 
         qty_payload = _compute_supply_quantity(line, mat)
-        # Compute pricePerUnitWithoutVat from totals, then DERIVE
-        # pricePerUnitWithVat from it via the same formula the Dodois server
-        # uses for validation: ppuWithVat = ppuWithoutVat × (1 + taxRate).
-        # Computing pricePerUnitWithVat independently via totalPriceWithVat /
-        # divisor drifts by €0.01 whenever the supplier's XML vatAmount is off
-        # from the strict formula, triggering
-        # SUPPLY_ITEM_PRICE_PER_UNIT_WITH_VAT_WRONG_CALCULATION.
+        # Compute BOTH pricePerUnit values directly from their respective
+        # totals.  The Dodois server validates each independently:
+        #   ppuWithoutVat ≈ round(totalWithoutVat / divisor)
+        #   ppuWithVat    ≈ round(totalWithVat    / divisor)
+        # Deriving ppuWithVat from ppuWithoutVat × (1 + taxRate) introduces
+        # double-rounding that drifts by ±€0.01 on ~5 % of lines (seen on
+        # Stanić 17423/V850/900: Fetakos, Sol, cafe latte, Ananas, Pileća).
         ppu_without_vat = _compute_price_per_unit(total_without_vat, qty_payload, mat)
-        tax_multiplier = Decimal("1") + Decimal(str(line.tax_percent)) / Decimal("100")
-        ppu_with_vat = float(
-            (Decimal(str(ppu_without_vat)) * tax_multiplier).quantize(
-                _CENT, rounding=ROUND_HALF_UP
-            )
-        )
+        ppu_with_vat = _compute_price_per_unit(total_with_vat, qty_payload, mat)
         supply_items.append({
             "quantity": qty_payload,
             "rawMaterialId": mat.dodois_material_id,
