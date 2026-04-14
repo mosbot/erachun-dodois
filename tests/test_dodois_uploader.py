@@ -5,6 +5,7 @@ from app.core.ubl_parser import UBLLineItem
 from unittest.mock import MagicMock
 from app.core.dodois_uploader import (
     validate_invoice, _aggregate_lines, _compute_price_per_unit,
+    _compute_supply_quantity,
     build_supply_payload, upload_invoice,
 )
 from tests.conftest import make_invoice, make_ubl
@@ -101,6 +102,34 @@ def test_price_per_unit_no_container():
     # Vindi Sok (no container), 24 pcs, €24.0 — divisor = 24
     mat = SimpleNamespace(dodois_container_id=None, unit=1, container_size=1.0)
     assert _compute_price_per_unit(24.0, 24, mat) == 1.0
+
+
+def test_supply_quantity_kgm_weighed_no_container():
+    # Pivac ham: no container, unit=5, KGM 30.176 → 30176 g
+    mat = SimpleNamespace(dodois_container_id=None, unit=5, container_size=1.0)
+    line = UBLLineItem(item_name="X", quantity=30.176, line_total=0, unit_code="KGM")
+    assert _compute_supply_quantity(line, mat) == 30176.0
+
+
+def test_supply_quantity_kgm_weighed_with_package():
+    # Stanić chicken fillet: 2.5kg package container, KGM 10 → 4 packages
+    mat = SimpleNamespace(dodois_container_id="c", unit=5, container_size=2500.0)
+    line = UBLLineItem(item_name="X", quantity=10.0, line_total=0, unit_code="KGM")
+    assert _compute_supply_quantity(line, mat) == 4.0
+
+
+def test_supply_quantity_pieces_passthrough():
+    # H87/pcs unit passes through regardless of unit
+    mat = SimpleNamespace(dodois_container_id="c", unit=5, container_size=450.0)
+    line = UBLLineItem(item_name="X", quantity=18, line_total=0, unit_code="H87")
+    assert _compute_supply_quantity(line, mat) == 18
+
+
+def test_price_per_unit_kgm_weighed_with_package():
+    # Stanić: 10 kg → qty_payload=4 packages, €62.00 → 6.20 €/kg
+    # divisor = 4 * 2500 / 1000 = 10
+    mat = SimpleNamespace(dodois_container_id="c", unit=5, container_size=2500.0)
+    assert _compute_price_per_unit(62.00, 4, mat) == 6.20
 
 
 def test_price_per_unit_weighed_no_container():

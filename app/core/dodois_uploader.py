@@ -97,12 +97,17 @@ def _compute_supply_quantity(line, mat) -> float:
     """Transform the XML line quantity into what Dodois expects in the payload.
 
     For weighed materials (unit=5 grams, no container) Dodois stores quantity
-    in grams, so a KGM line must be scaled ×1000. Everything else (containers,
-    piece-count materials) passes through as-is.
+    in grams, so a KGM line must be scaled ×1000. For weighed materials WITH
+    a package container (e.g. Stanić chicken fillet, 2.5kg packages), a KGM
+    line reports total kilograms and must be converted to number of packages
+    via ``kg * 1000 / container_size_g`` — otherwise 10 kg is uploaded as 10
+    packages = 25 kg. Everything else (piece-count materials with H87/PCE/KOM
+    units) passes through as-is.
     """
-    if mat.dodois_container_id is None and mat.unit == 5:
-        if (line.unit_code or "").upper() == "KGM":
+    if mat.unit == 5 and (line.unit_code or "").upper() == "KGM":
+        if mat.dodois_container_id is None:
             return line.quantity * 1000
+        return float(line.quantity * 1000 / mat.container_size)
     return line.quantity
 
 
