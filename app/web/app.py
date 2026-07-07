@@ -375,9 +375,11 @@ def render_invoices_page():
 
     # ---- Summary (compact inline) ----
     total_amount = sum(i.total_with_vat for i in invoices)
+    total_vat = sum(i.total_vat for i in invoices)
     n_suppliers = len(set(i.sender_name for i in invoices))
     st.markdown(
         f"**{len(invoices)}** invoices &nbsp;/&nbsp; **{n_suppliers}** suppliers "
+        f"&nbsp;/&nbsp; VAT: **€{total_vat:,.2f}** "
         f"&nbsp;/&nbsp; Total: **€{total_amount:,.2f}**",
     )
 
