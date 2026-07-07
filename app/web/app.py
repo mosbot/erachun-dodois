@@ -32,7 +32,7 @@ from app.core.ubl_parser import parse_ubl_xml
 # ============================================================
 st.set_page_config(
     page_title="eRačun Portal",
-    page_icon=None,
+    page_icon="🧾",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -55,8 +55,17 @@ st.markdown("""
     --color-destructive: #DC2626;
 }
 
-html, body, [class*="css"] {
+html, body,
+.stApp,
+[data-testid="stAppViewContainer"],
+[data-testid="stSidebar"],
+[data-testid="stHeader"],
+.stApp * {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+/* Keep code/monospace elements on a mono stack */
+.stApp code, .stApp pre, .stApp kbd {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
 
 /* Sidebar */
@@ -120,19 +129,10 @@ section[data-testid="stSidebar"] .stRadio label:hover {
     overflow: hidden;
 }
 
-/* Login card */
-.login-card {
-    background: #FFFFFF;
-    border-radius: 12px;
-    padding: 2.5rem;
-    box-shadow: 0 4px 24px rgba(0,0,0,0.06);
-    border: 1px solid #E2E8F0;
-    max-width: 400px;
-    margin: 0 auto;
-}
+/* Login header (inside bordered container) */
 .login-header {
     text-align: center;
-    padding-bottom: 1.5rem;
+    padding-bottom: 1rem;
 }
 .login-header h1 {
     color: #1E3A5F;
@@ -210,26 +210,26 @@ def authenticate():
     if st.session_state.authenticated:
         return True
 
-    st.markdown(
-        """
-        <div class="login-card">
-            <div class="login-header">
-                <h1>eRačun Portal</h1>
-                <p>Invoice management for Orange food business d.o.o.</p>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
-        st.text_input("Username", placeholder="Enter username", key="_login_user")
-        st.text_input("Password", type="password", placeholder="Enter password", key="_login_pass")
-        st.button("Sign in", use_container_width=True, on_click=_do_login)
+        st.write("")
+        st.write("")
+        with st.container(border=True):
+            st.markdown(
+                """
+                <div class="login-header">
+                    <h1>eRačun Portal</h1>
+                    <p>Invoice management for Orange food business d.o.o.</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.text_input("Username", placeholder="Enter username", key="_login_user")
+            st.text_input("Password", type="password", placeholder="Enter password", key="_login_pass")
+            st.button("Sign in", use_container_width=True, type="primary", on_click=_do_login)
 
-        if st.session_state.get("_login_error"):
-            st.error(st.session_state._login_error)
+            if st.session_state.get("_login_error"):
+                st.error(st.session_state._login_error)
 
     return False
 
@@ -245,7 +245,7 @@ def render_sidebar():
 
         page = st.radio(
             "Navigation",
-            ["Invoices", "Upload XML", "Mappings", "Settings"],
+            ["Invoices", "VAT report", "Upload XML", "Mappings", "Settings"],
             label_visibility="collapsed",
         )
 
@@ -320,30 +320,26 @@ def render_invoices_page():
         search_text = st.text_input(
             "Search",
             placeholder="Supplier or invoice #...",
-            label_visibility="collapsed",
         )
     with f2:
         supplier_filter = st.selectbox(
             "Supplier",
             ["All suppliers"] + suppliers,
-            label_visibility="collapsed",
         )
     with f3:
         pizzeria_filter = st.selectbox(
             "Pizzeria",
             pizzeria_options,
-            label_visibility="collapsed",
             key="inv_pizzeria_filter",
         )
     with f4:
         date_range = st.date_input(
-            "Date range",
+            "Period",
             value=(
                 datetime.now() - timedelta(days=30),
                 datetime.now(),
             ),
             format="DD.MM.YYYY",
-            label_visibility="collapsed",
         )
 
     # ---- Query ----
@@ -802,6 +798,189 @@ def render_invoice_detail(inv: Invoice, session):
                 st.warning("PDF file not found on disk.")
         else:
             st.info("No PDF attached to this invoice.")
+
+
+# ============================================================
+# VAT Report Page
+# ============================================================
+@st.cache_data(show_spinner=False)
+def _invoice_vat_breakdown(inv_id: int, xml_full_path: str, mtime: float,
+                           fallback_taxable: float, fallback_vat: float):
+    """Return per-rate VAT breakdown for one invoice as a list of
+    {"percent": float|None, "taxable": float, "tax": float}.
+
+    Cached per (invoice, file mtime) so XML is parsed at most once until it
+    changes. Falls back to a single 'Other' bucket built from the stored
+    invoice totals when the XML is missing or carries no TaxSubtotal.
+    """
+    p = Path(xml_full_path)
+    if xml_full_path and p.exists():
+        try:
+            ubl = parse_ubl_xml(p.read_text(encoding="utf-8"))
+            if ubl.tax_subtotals:
+                return [
+                    {"percent": s["percent"], "taxable": s["taxable"], "tax": s["tax"]}
+                    for s in ubl.tax_subtotals
+                ]
+        except Exception:
+            pass
+    # Fallback — keep grand totals reconciled with the invoice list.
+    return [{"percent": None, "taxable": fallback_taxable, "tax": fallback_vat}]
+
+
+def _rate_label(percent) -> str:
+    if percent is None:
+        return "Other / exempt"
+    return f"{int(percent)}%" if float(percent).is_integer() else f"{percent:g}%"
+
+
+def _rate_sort_key(percent) -> float:
+    # None (unknown/exempt) sorts last
+    return -1.0 if percent is None else float(percent)
+
+
+def _aggregate_vat(invoices, xml_dir: Path):
+    """Aggregate a list of invoices into {rate_percent: {"taxable", "tax"}}."""
+    agg: dict = {}
+    for inv in invoices:
+        xml_full = str(xml_dir / inv.xml_path) if inv.xml_path else ""
+        mtime = 0.0
+        if xml_full and Path(xml_full).exists():
+            mtime = Path(xml_full).stat().st_mtime
+        rows = _invoice_vat_breakdown(
+            inv.id, xml_full, mtime,
+            inv.total_without_vat or 0.0, inv.total_vat or 0.0,
+        )
+        for r in rows:
+            key = r["percent"]
+            bucket = agg.setdefault(key, {"taxable": 0.0, "tax": 0.0})
+            bucket["taxable"] += r["taxable"] or 0.0
+            bucket["tax"] += r["tax"] or 0.0
+    return agg
+
+
+def _vat_table(agg: dict) -> pd.DataFrame:
+    rows = []
+    for percent in sorted(agg.keys(), key=_rate_sort_key, reverse=True):
+        b = agg[percent]
+        rows.append({
+            "Rate": _rate_label(percent),
+            "Taxable base": round(b["taxable"], 2),
+            "VAT": round(b["tax"], 2),
+            "Gross": round(b["taxable"] + b["tax"], 2),
+        })
+    # Total row
+    tot_taxable = sum(b["taxable"] for b in agg.values())
+    tot_vat = sum(b["tax"] for b in agg.values())
+    rows.append({
+        "Rate": "Total",
+        "Taxable base": round(tot_taxable, 2),
+        "VAT": round(tot_vat, 2),
+        "Gross": round(tot_taxable + tot_vat, 2),
+    })
+    return pd.DataFrame(rows)
+
+
+def _render_vat_block(invoices, xml_dir: Path):
+    agg = _aggregate_vat(invoices, xml_dir)
+    df = _vat_table(agg)
+
+    tot_taxable = sum(b["taxable"] for b in agg.values())
+    tot_vat = sum(b["tax"] for b in agg.values())
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Invoices", len(invoices))
+    m2.metric("Taxable base", f"€{tot_taxable:,.2f}")
+    m3.metric("VAT total", f"€{tot_vat:,.2f}")
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Taxable base": st.column_config.NumberColumn(format="€%.2f"),
+            "VAT": st.column_config.NumberColumn(format="€%.2f"),
+            "Gross": st.column_config.NumberColumn(format="€%.2f"),
+        },
+    )
+
+
+def render_vat_report_page():
+    st.title("VAT report")
+    st.caption("Incoming-invoice VAT broken down by rate for a period.")
+
+    session = get_db()()
+    cfg = get_config()
+    storage = get_storage_config(cfg)
+    xml_dir = Path(storage.get("xml_dir", "/app/data/xmls"))
+
+    # ---- Period + options ----
+    today = datetime.now().date()
+    month_start = today.replace(day=1)
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        date_range = st.date_input(
+            "Period",
+            value=(month_start, today),
+            format="DD.MM.YYYY",
+            key="vat_period",
+        )
+    with c2:
+        st.write("")
+        st.write("")
+        by_month = st.checkbox(
+            "Break down by month",
+            key="vat_by_month",
+            help="When the period spans several months, show a separate table per month.",
+        )
+
+    if not (isinstance(date_range, tuple) and len(date_range) == 2):
+        st.info("Select both a start and end date.")
+        session.close()
+        return
+    start_date, end_date = date_range
+
+    # ---- Query invoices in period ----
+    invoices = (
+        session.query(Invoice)
+        .filter(
+            Invoice.processing_status != "deleted",
+            Invoice.issue_date >= datetime.combine(start_date, datetime.min.time()),
+            Invoice.issue_date <= datetime.combine(end_date, datetime.max.time()),
+        )
+        .order_by(Invoice.issue_date.asc())
+        .all()
+    )
+
+    if not invoices:
+        st.info("No invoices in this period.")
+        session.close()
+        return
+
+    with st.spinner("Calculating VAT..."):
+        if by_month:
+            # Group by calendar month
+            groups: dict = {}
+            for inv in invoices:
+                key = inv.issue_date.strftime("%Y-%m") if inv.issue_date else "—"
+                groups.setdefault(key, []).append(inv)
+
+            if len(groups) == 1:
+                _render_vat_block(invoices, xml_dir)
+            else:
+                # Grand total first
+                st.subheader("All months")
+                _render_vat_block(invoices, xml_dir)
+                st.divider()
+                for key in sorted(groups.keys()):
+                    sample = groups[key][0]
+                    label = sample.issue_date.strftime("%B %Y") if sample.issue_date else key
+                    st.subheader(label)
+                    _render_vat_block(groups[key], xml_dir)
+                    st.divider()
+        else:
+            _render_vat_block(invoices, xml_dir)
+
+    session.close()
 
 
 # ============================================================
@@ -1636,6 +1815,8 @@ def main():
 
     if page == "Invoices":
         render_invoices_page()
+    elif page == "VAT report":
+        render_vat_report_page()
     elif page == "Upload XML":
         render_upload_page()
     elif page == "Mappings":

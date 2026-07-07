@@ -58,6 +58,10 @@ class UBLInvoice:
     total_with_vat: float = 0.0
     payable_amount: float = 0.0
 
+    # Per-rate VAT breakdown from cac:TaxTotal/cac:TaxSubtotal.
+    # Each entry: {"percent": float, "taxable": float, "tax": float}
+    tax_subtotals: List[dict] = field(default_factory=list)
+
     # Line items
     lines: List[UBLLineItem] = field(default_factory=list)
 
@@ -139,10 +143,17 @@ def parse_ubl_xml(xml_content: Union[str, bytes]) -> UBLInvoice:
         inv.total_with_vat = _float(_text(monetary, "cbc:TaxInclusiveAmount"))
         inv.payable_amount = _float(_text(monetary, "cbc:PayableAmount"))
 
-    # VAT total
+    # VAT total + per-rate breakdown (document-level TaxTotal)
     tax_total = root.find(".//cac:TaxTotal", NS)
     if tax_total is not None:
         inv.total_vat = _float(_text(tax_total, "cbc:TaxAmount"))
+        for sub in tax_total.findall("cac:TaxSubtotal", NS):
+            cat = sub.find("cac:TaxCategory", NS)
+            inv.tax_subtotals.append({
+                "percent": _float(_text(cat, "cbc:Percent")) if cat is not None else 0.0,
+                "taxable": _float(_text(sub, "cbc:TaxableAmount")),
+                "tax": _float(_text(sub, "cbc:TaxAmount")),
+            })
 
     # Line items
     for line_el in root.findall(".//cac:InvoiceLine", NS):
