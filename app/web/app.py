@@ -18,6 +18,8 @@ from pathlib import Path
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 sys.path.insert(0, PROJECT_ROOT)
 
+from sqlalchemy import func
+
 from app.db.models import (
     Invoice, SyncLog, DodoisSupplierCatalog, SupplierMapping,
     DodoisRawMaterialCatalog, ProductMapping,
@@ -25,7 +27,7 @@ from app.db.models import (
     get_or_create_supplier_mapping, sync_product_mappings_from_lines, seed_all,
 )
 from app.core.config_loader import load_config, get_database_url, get_storage_config, is_dodois_supplier
-from app.core.ubl_parser import parse_ubl_xml
+from app.core.ubl_parser import parse_ubl_xml, resolve_vat_date
 
 # ============================================================
 # Page config
@@ -280,6 +282,16 @@ def render_sidebar():
 # ============================================================
 # Dodois status helper
 # ============================================================
+def _vat_date_of(inv: Invoice):
+    """Date deciding the invoice's VAT period, with a fallback for old rows.
+
+    ``vat_date`` is filled at sync time and backfilled by
+    ``scripts/backfill_vat_dates.py``. Rows predating the backfill fall back to
+    the issue date, which is what the report used before.
+    """
+    return inv.vat_date or inv.issue_date
+
+
 def _dodois_status_label(inv: Invoice, enabled_oibs: set) -> str:
     """Return short status string for the Dodois column in the invoice table."""
     if inv.sender_oib not in enabled_oibs:
@@ -398,6 +410,7 @@ def render_invoices_page():
         inv_ids.append(inv.id)
         data.append({
             "Date": inv.issue_date.strftime("%d.%m.%Y") if inv.issue_date else "-",
+            "VAT date": _vat_date_of(inv).strftime("%d.%m.%Y") if _vat_date_of(inv) else "-",
             "Supplier": inv.sender_name,
             "Invoice #": inv.invoice_number or inv.document_nr,
             "Amount (no VAT)": inv.total_without_vat,
@@ -419,6 +432,12 @@ def render_invoices_page():
         selection_mode="single-row",
         key="invoices_table",
         column_config={
+            "VAT date": st.column_config.TextColumn(
+                width="small",
+                help="Tax point — the date that decides the VAT period. "
+                     "Differs from the invoice date when the supplier bills "
+                     "after the supply (utilities, delivery services).",
+            ),
             "Amount (no VAT)": st.column_config.NumberColumn(format="€%.2f"),
             "VAT": st.column_config.NumberColumn(format="€%.2f"),
             "Total": st.column_config.NumberColumn(format="€%.2f"),
@@ -471,7 +490,7 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
     import json as _json
     from app.db.models import is_dodois_supplier_enabled
     from app.core.dodois_uploader import validate_invoice, upload_invoice
-    from app.core.ubl_parser import parse_ubl_xml
+    from app.core.ubl_parser import parse_ubl_xml, resolve_vat_date
 
     supplier_enabled = is_dodois_supplier_enabled(session, inv.sender_oib)
     if not supplier_enabled and not inv.dodois_supply_id:
@@ -839,6 +858,11 @@ def _rate_sort_key(percent) -> float:
     return -1.0 if percent is None else float(percent)
 
 
+# Period column for the report. coalesce keeps rows that predate the vat_date
+# backfill visible, matching _vat_date_of's fallback.
+_VAT_DATE_COL = func.coalesce(Invoice.vat_date, Invoice.issue_date)
+
+
 def _aggregate_vat(invoices, xml_dir: Path):
     """Aggregate a list of invoices into {rate_percent: {"taxable", "tax"}}."""
     agg: dict = {}
@@ -881,6 +905,56 @@ def _vat_table(agg: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _supplier_table(invoices) -> pd.DataFrame:
+    """One row per supplier with a single VAT figure — no per-rate split.
+
+    Built from the stored invoice totals rather than the per-rate XML
+    breakdown, so it stays fast and always reconciles with the invoice list.
+    """
+    by_supplier: dict = {}
+    for inv in invoices:
+        name = (inv.sender_name or "—").strip()
+        bucket = by_supplier.setdefault(name, {"n": 0, "base": 0.0, "vat": 0.0})
+        bucket["n"] += 1
+        bucket["base"] += inv.total_without_vat or 0.0
+        bucket["vat"] += inv.total_vat or 0.0
+
+    rows = [
+        {
+            "Supplier": name,
+            "Invoices": b["n"],
+            "Taxable base": round(b["base"], 2),
+            "VAT": round(b["vat"], 2),
+            "Gross": round(b["base"] + b["vat"], 2),
+        }
+        for name, b in sorted(by_supplier.items(), key=lambda kv: -kv[1]["vat"])
+    ]
+    rows.append({
+        "Supplier": "Total",
+        "Invoices": sum(b["n"] for b in by_supplier.values()),
+        "Taxable base": round(sum(b["base"] for b in by_supplier.values()), 2),
+        "VAT": round(sum(b["vat"] for b in by_supplier.values()), 2),
+        "Gross": round(sum(b["base"] + b["vat"] for b in by_supplier.values()), 2),
+    })
+    return pd.DataFrame(rows)
+
+
+def _render_supplier_breakdown(invoices):
+    df = _supplier_table(invoices)
+    with st.expander(f"By supplier ({len(df) - 1})"):
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Invoices": st.column_config.NumberColumn(width="small"),
+                "Taxable base": st.column_config.NumberColumn(format="€%.2f"),
+                "VAT": st.column_config.NumberColumn(format="€%.2f"),
+                "Gross": st.column_config.NumberColumn(format="€%.2f"),
+            },
+        )
+
+
 def _render_vat_block(invoices, xml_dir: Path):
     agg = _aggregate_vat(invoices, xml_dir)
     df = _vat_table(agg)
@@ -903,10 +977,16 @@ def _render_vat_block(invoices, xml_dir: Path):
         },
     )
 
+    _render_supplier_breakdown(invoices)
+
 
 def render_vat_report_page():
     st.title("VAT report")
-    st.caption("Incoming-invoice VAT broken down by rate for a period.")
+    st.caption(
+        "Incoming-invoice VAT broken down by rate for a period. Invoices are "
+        "assigned to the period by their VAT date (tax point / date of supply), "
+        "not by the invoice date."
+    )
 
     session = get_db()()
     cfg = get_config()
@@ -944,10 +1024,10 @@ def render_vat_report_page():
         session.query(Invoice)
         .filter(
             Invoice.processing_status != "deleted",
-            Invoice.issue_date >= datetime.combine(start_date, datetime.min.time()),
-            Invoice.issue_date <= datetime.combine(end_date, datetime.max.time()),
+            _VAT_DATE_COL >= datetime.combine(start_date, datetime.min.time()),
+            _VAT_DATE_COL <= datetime.combine(end_date, datetime.max.time()),
         )
-        .order_by(Invoice.issue_date.asc())
+        .order_by(_VAT_DATE_COL.asc())
         .all()
     )
 
@@ -961,7 +1041,8 @@ def render_vat_report_page():
             # Group by calendar month
             groups: dict = {}
             for inv in invoices:
-                key = inv.issue_date.strftime("%Y-%m") if inv.issue_date else "—"
+                vd = _vat_date_of(inv)
+                key = vd.strftime("%Y-%m") if vd else "—"
                 groups.setdefault(key, []).append(inv)
 
             if len(groups) == 1:
@@ -972,8 +1053,8 @@ def render_vat_report_page():
                 _render_vat_block(invoices, xml_dir)
                 st.divider()
                 for key in sorted(groups.keys()):
-                    sample = groups[key][0]
-                    label = sample.issue_date.strftime("%B %Y") if sample.issue_date else key
+                    sample = _vat_date_of(groups[key][0])
+                    label = sample.strftime("%B %Y") if sample else key
                     st.subheader(label)
                     _render_vat_block(groups[key], xml_dir)
                     st.divider()

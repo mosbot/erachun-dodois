@@ -42,6 +42,9 @@ class Invoice(Base):
     invoice_number = Column(String(100), default="")
     issue_date = Column(DateTime, nullable=True, index=True)
     due_date = Column(DateTime, nullable=True)
+    # Date that decides the VAT period: the tax point (supply date) when the
+    # supplier states one, else the issue date. See ubl_parser.resolve_vat_date.
+    vat_date = Column(DateTime, nullable=True, index=True)
     currency_code = Column(String(3), default="EUR")
 
     # Amounts

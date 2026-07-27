@@ -175,6 +175,45 @@ Invoices contain base64-encoded PDF in:
 ### Line aggregation
 eRačun invoices (e.g., METRO) may have **duplicate lines** — same product appears multiple times with qty=1. These must be aggregated into a single line (sum quantities, recalculate totals) before uploading to Dodois.
 
+### VAT date (tax point) — decides the VAT period, NOT the issue date
+
+Croatian VAT ties the right to deduct input VAT to when the supply happened (`ZPDV čl. 30`
+and `čl. 57`), not to when the invoice was written — a supplier may legally invoice up to the
+15th of the following month (`čl. 78`), so utilities and delivery platforms routinely bill in
+early July for a June supply.
+
+`ubl_parser.resolve_vat_date` takes **`cbc:TaxPointDate` (BT-7), else
+`cac:Delivery/cbc:ActualDeliveryDate` (BT-72), else `cbc:IssueDate`**. Suppliers use one field
+or the other roughly half and half; across all 945 stored invoices the two are **never present
+with different values**, so the precedence between them is arbitrary.
+
+Validated against the accountant's own Minimax U-RA export for 06/2026 (`Datum poslovnog
+događaja`): this rule reproduces their period for **152 of 152** matched invoices (98.7% to the
+exact day), while keying on the issue date gets **25 of them wrong**.
+
+- **Do NOT add `cac:InvoicePeriod/cbc:EndDate` to the chain.** It is a statement window, not a
+  tax point — STANIĆ always sets it to month end even for a supply on the 8th — and including
+  it dropped the match to 97.4%.
+- **Implausible dates are ignored**: more than 31 days after or 365 days before the issue date
+  falls back to the issue date. Zagrebački Holding has sent a March invoice declaring delivery
+  on 31.12.2026, which would otherwise file into the wrong year.
+- Stored in `invoices.vat_date`; `_vat_date_of` / `_VAT_DATE_COL` in `app/web/app.py` fall back
+  to `issue_date` for rows predating the backfill.
+- Backfill: `scripts/backfill_vat_dates.py` (adds the column too — `create_all` never adds
+  columns to existing tables).
+
+Known refinements deliberately **not** implemented (they need a receipt date, and
+`eracun_delivered` is only populated on ~52% of rows because sync writes it once at insert and
+the 30-minute cron beats the platform's "delivered" flag):
+
+- `Pravilnik čl. 133` — if the invoice arrives *after* the PDV filing deadline (from 1.1.2026:
+  the last day of the following month; the 20th up to 12/2025), the deduction moves to the
+  period of receipt.
+- Credit notes legally follow `ZPDV čl. 63. st. 3` — the period the supplier's correction
+  notice was **received**, not the tax point.
+- A supplier on cash accounting (R-2, "prema naplaćenim naknadama") defers the deduction to
+  payment. One such supplier exists in the data: VIRTUAL M j.d.o.o.
+
 ### Credit notes (Odobrenje) — different document, different sign
 
 Returns arrive as a **UBL `CreditNote` document**, not an `Invoice`: root element is

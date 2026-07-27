@@ -43,6 +43,11 @@ class UBLInvoice:
     due_date: Optional[datetime] = None
     currency_code: str = "EUR"
 
+    # Tax point, i.e. when the supply actually happened. Suppliers state it
+    # either way round and never both differently — see resolve_vat_date.
+    tax_point_date: Optional[datetime] = None   # cbc:TaxPointDate (BT-7)
+    delivery_date: Optional[datetime] = None    # cac:Delivery/ActualDeliveryDate (BT-72)
+
     # Supplier
     supplier_name: str = ""
     supplier_oib: str = ""
@@ -110,6 +115,9 @@ def parse_ubl_xml(xml_content: Union[str, bytes]) -> UBLInvoice:
     # Dates
     inv.issue_date = _parse_date(_text(root, ".//cbc:IssueDate"))
     inv.due_date = _parse_date(_text(root, ".//cbc:DueDate"))
+    inv.tax_point_date = _parse_date(_text(root, "cbc:TaxPointDate"))
+    inv.delivery_date = _parse_date(
+        _text(root, "cac:Delivery/cbc:ActualDeliveryDate"))
 
     # Currency
     inv.currency_code = _text(root, ".//cbc:DocumentCurrencyCode") or "EUR"
@@ -314,6 +322,45 @@ def _float(val: Optional[str]) -> float:
         return float(val)
     except (ValueError, TypeError):
         return 0.0
+
+
+_MAX_DAYS_AFTER = 31
+_MAX_DAYS_BEFORE = 365
+
+
+def resolve_vat_date(inv: UBLInvoice) -> Optional[datetime]:
+    """Return the date that decides which VAT period an invoice belongs to.
+
+    Croatian VAT ties the right to deduct input VAT to the moment the supply
+    happened (ZPDV čl. 30 and čl. 57), not to when the invoice was written —
+    a supplier may legally invoice up to the 15th of the following month, so
+    utilities routinely bill in July for a June supply.
+
+    Precedence is TaxPointDate, then ActualDeliveryDate, then the issue date.
+    Checked against the accountant's own U-RA ledger for 06/2026: this
+    reproduces their period for 152 of 152 invoices, while keying on the issue
+    date gets 25 of them wrong. ``cac:InvoicePeriod`` is deliberately NOT used
+    — for several suppliers it is a statement window ending at month end, and
+    including it made the match worse.
+
+    Dates wildly inconsistent with the issue date are ignored: Zagrebački
+    Holding has sent a March invoice stating delivery on 31.12.2026, which
+    would file it in the wrong year.
+    """
+    stated = inv.tax_point_date or inv.delivery_date
+    if stated is None:
+        return inv.issue_date
+    if inv.issue_date is None:
+        return stated
+    gap = (stated - inv.issue_date).days
+    if gap > _MAX_DAYS_AFTER or gap < -_MAX_DAYS_BEFORE:
+        logger.warning(
+            "Implausible tax point %s on invoice %s issued %s (%+d days) — "
+            "falling back to the issue date",
+            stated.date(), inv.invoice_number, inv.issue_date.date(), gap,
+        )
+        return inv.issue_date
+    return stated
 
 
 def _normalise_amount(value: float, is_credit_note: bool) -> float:

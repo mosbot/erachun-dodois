@@ -1,6 +1,6 @@
 """Tests for UBL parsing of Invoice vs CreditNote documents."""
 
-from app.core.ubl_parser import parse_ubl_xml
+from app.core.ubl_parser import parse_ubl_xml, resolve_vat_date
 
 CN_NS = (
     'xmlns="urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2" '
@@ -201,3 +201,99 @@ def test_plain_invoice_lines_still_parse():
     assert line.quantity == 5.0
     assert line.line_total == 463.72
     assert line.tax_amount == 112.93
+
+
+# ── VAT date (tax point) ─────────────────────────────────────────────────────
+
+def _invoice_with_dates(issue, tax_point=None, delivery=None) -> str:
+    """Build a minimal invoice carrying the requested date fields."""
+    tp = f"  <cbc:TaxPointDate>{tax_point}</cbc:TaxPointDate>\n" if tax_point else ""
+    dl = (f"  <cac:Delivery><cbc:ActualDeliveryDate>{delivery}"
+          f"</cbc:ActualDeliveryDate></cac:Delivery>\n") if delivery else ""
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Invoice {INV_NS}>
+  <cbc:ID>TEST-1</cbc:ID>
+  <cbc:IssueDate>{issue}</cbc:IssueDate>
+{tp}  <cbc:InvoiceTypeCode>380</cbc:InvoiceTypeCode>
+{dl}  <cac:LegalMonetaryTotal>
+    <cbc:TaxExclusiveAmount>100.00</cbc:TaxExclusiveAmount>
+    <cbc:TaxInclusiveAmount>125.00</cbc:TaxInclusiveAmount>
+  </cac:LegalMonetaryTotal>
+</Invoice>"""
+
+
+def test_tax_point_date_is_parsed():
+    ubl = parse_ubl_xml(_invoice_with_dates("2026-07-09", tax_point="2026-06-30"))
+    assert ubl.tax_point_date.strftime("%Y-%m-%d") == "2026-06-30"
+
+
+def test_actual_delivery_date_is_parsed():
+    ubl = parse_ubl_xml(_invoice_with_dates("2026-07-09", delivery="2026-06-30"))
+    assert ubl.delivery_date.strftime("%Y-%m-%d") == "2026-06-30"
+
+
+def test_vat_date_prefers_tax_point():
+    """HEP/E.ON pattern: issued in July for a June supply."""
+    ubl = parse_ubl_xml(_invoice_with_dates("2026-07-09", tax_point="2026-06-30"))
+    assert resolve_vat_date(ubl).strftime("%Y-%m-%d") == "2026-06-30"
+
+
+def test_vat_date_falls_back_to_delivery():
+    ubl = parse_ubl_xml(_invoice_with_dates("2026-07-09", delivery="2026-06-30"))
+    assert resolve_vat_date(ubl).strftime("%Y-%m-%d") == "2026-06-30"
+
+
+def test_vat_date_falls_back_to_issue_date():
+    ubl = parse_ubl_xml(_invoice_with_dates("2026-07-09"))
+    assert resolve_vat_date(ubl).strftime("%Y-%m-%d") == "2026-07-09"
+
+
+def test_vat_date_tax_point_wins_over_delivery():
+    ubl = parse_ubl_xml(_invoice_with_dates(
+        "2026-07-09", tax_point="2026-06-30", delivery="2026-07-01"))
+    assert resolve_vat_date(ubl).strftime("%Y-%m-%d") == "2026-06-30"
+
+
+def test_vat_date_ignores_date_far_in_the_future():
+    """Zagrebački Holding sent a March invoice with delivery 31.12.2026."""
+    ubl = parse_ubl_xml(_invoice_with_dates("2026-03-17", delivery="2026-12-31"))
+    assert resolve_vat_date(ubl).strftime("%Y-%m-%d") == "2026-03-17"
+
+
+def test_vat_date_ignores_date_far_in_the_past():
+    ubl = parse_ubl_xml(_invoice_with_dates("2026-03-17", delivery="2024-01-05"))
+    assert resolve_vat_date(ubl).strftime("%Y-%m-%d") == "2026-03-17"
+
+
+def test_vat_date_accepts_delivery_shortly_after_issue():
+    """Pivac delivers the day after invoicing — legitimate, keep it."""
+    ubl = parse_ubl_xml(_invoice_with_dates("2026-07-27", delivery="2026-07-28"))
+    assert resolve_vat_date(ubl).strftime("%Y-%m-%d") == "2026-07-28"
+
+
+def test_vat_date_accepts_late_invoicing_within_a_year():
+    ubl = parse_ubl_xml(_invoice_with_dates("2026-03-27", delivery="2025-12-31"))
+    assert resolve_vat_date(ubl).strftime("%Y-%m-%d") == "2025-12-31"
+
+
+def test_vat_date_ignores_invoice_period_end():
+    """InvoicePeriod is a statement window, not a tax point — must not be used."""
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Invoice {INV_NS}>
+  <cbc:ID>TEST-2</cbc:ID>
+  <cbc:IssueDate>2026-04-08</cbc:IssueDate>
+  <cac:InvoicePeriod>
+    <cbc:StartDate>2026-04-01</cbc:StartDate>
+    <cbc:EndDate>2026-04-30</cbc:EndDate>
+  </cac:InvoicePeriod>
+  <cac:LegalMonetaryTotal>
+    <cbc:TaxExclusiveAmount>10.00</cbc:TaxExclusiveAmount>
+  </cac:LegalMonetaryTotal>
+</Invoice>"""
+    ubl = parse_ubl_xml(xml)
+    assert resolve_vat_date(ubl).strftime("%Y-%m-%d") == "2026-04-08"
+
+
+def test_credit_note_vat_date_uses_tax_point():
+    ubl = parse_ubl_xml(_credit_note())
+    assert resolve_vat_date(ubl).strftime("%Y-%m-%d") == "2026-06-09"

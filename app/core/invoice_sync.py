@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.eracun_client import EracunClient, InboxItem
-from app.core.ubl_parser import parse_ubl_xml
+from app.core.ubl_parser import parse_ubl_xml, resolve_vat_date
 from app.db.models import Invoice, SyncLog, get_or_create_supplier_mapping, sync_product_mappings_from_lines
 
 logger = logging.getLogger(__name__)
@@ -206,6 +206,7 @@ class InvoiceSyncService:
                 invoice.invoice_number = ubl.invoice_number or item.document_nr
                 invoice.issue_date = ubl.issue_date
                 invoice.due_date = ubl.due_date
+                invoice.vat_date = resolve_vat_date(ubl)
                 invoice.currency_code = ubl.currency_code
                 invoice.total_without_vat = ubl.total_without_vat
                 invoice.total_vat = ubl.total_vat
@@ -277,6 +278,7 @@ class InvoiceSyncService:
             invoice_number=ubl.invoice_number,
             issue_date=ubl.issue_date,
             due_date=ubl.due_date,
+            vat_date=resolve_vat_date(ubl),
             currency_code=ubl.currency_code,
             total_without_vat=ubl.total_without_vat,
             total_vat=ubl.total_vat,
