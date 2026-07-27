@@ -27,6 +27,12 @@ services:
         condition: service_healthy
     environment:
       - ERACUN_CONFIG=/app/config.yaml
+      # A native crash in a C extension (pyarrow, lxml, psycopg2) kills the
+      # Streamlit process with exit code 0 and no traceback, so Docker just
+      # restarts it and users see a login screen with nothing in the logs.
+      # faulthandler turns that into a readable C-level stack.
+      - PYTHONFAULTHANDLER=1
+      - PYTHONUNBUFFERED=1
     restart: unless-stopped
 
   postgres:
