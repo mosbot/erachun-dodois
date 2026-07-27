@@ -14,13 +14,7 @@ lxml==5.3.0
 pandas==2.2.3
 pyotp==2.9.0
 
-# Transitive deps of streamlit/pandas, pinned because they are what the
-# runtime actually crashes on when left to float.
-#
-# pyarrow 25.0.0 (released 2026-07-10) segfaults inside
-# pandas_compat.convert_column when st.dataframe serialises the invoice
-# list, killing the Streamlit process and bouncing every user back to the
-# login screen. 24.0.0 is the build that ran in production for weeks.
-# See CLAUDE.md § "Dependency pinning".
-pyarrow==24.0.0
-numpy==2.5.1
+# Direct dependencies only. Transitive packages (pyarrow, numpy, tornado, …)
+# are pinned in constraints.txt, which the Dockerfile applies — a rebuild that
+# re-resolves them can swap the runtime under unchanged code and has taken the
+# portal down before. See CLAUDE.md § "Dependency pinning".

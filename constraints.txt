@@ -1,0 +1,86 @@
+# Full resolved dependency set — the lock file for the Docker image.
+#
+# requirements.txt declares what we depend on; this file pins everything that
+# actually gets installed, including transitive packages. Without it a rebuild
+# re-resolves the tree and can swap the runtime under unchanged code: on
+# 2026-07-27 a rebuild picked up pyarrow 25.0.0, which segfaults inside
+# st.dataframe and took the portal down. See CLAUDE.md § "Dependency pinning".
+#
+# Captured from the image running in production on 2026-07-27 (known good).
+#
+# To upgrade deliberately:
+#   1. edit requirements.txt (or delete the line you want to move here)
+#   2. docker compose build --no-cache web
+#   3. docker compose run --rm web pip freeze > constraints.txt
+#   4. redeploy and exercise the invoice list before committing
+#
+# Do NOT hand-edit a single version here to "just try something" — the point of
+# this file is that the deployed set is reproducible.
+
+alembic==1.14.0
+altair==5.5.0
+annotated-types==0.8.0
+anyio==4.14.2
+APScheduler==3.10.4
+attrs==26.1.0
+bcrypt==4.2.1
+blinker==1.9.0
+cachetools==5.5.2
+captcha==0.7.1
+certifi==2026.7.22
+charset-normalizer==3.4.9
+click==8.4.2
+extra-streamlit-components==0.1.81
+fastapi==0.115.6
+gitdb==4.0.12
+GitPython==3.1.57
+greenlet==3.5.4
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.18
+Jinja2==3.1.6
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+lxml==5.3.0
+Mako==1.3.12
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+mdurl==0.1.2
+narwhals==2.24.0
+numpy==2.5.1
+packaging==24.2
+pandas==2.2.3
+pillow==11.3.0
+protobuf==5.29.6
+psycopg2-binary==2.9.10
+pyarrow==24.0.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+pydeck==0.9.3
+Pygments==2.20.0
+PyJWT==2.13.0
+pyotp==2.9.0
+python-dateutil==2.9.0
+pytz==2026.3.post1
+PyYAML==6.0.2
+referencing==0.37.0
+requests==2.34.2
+rich==13.9.4
+rpds-py==2026.6.3
+six==1.17.0
+smmap==5.0.3
+SQLAlchemy==2.0.36
+starlette==0.41.3
+streamlit==1.41.1
+streamlit-authenticator==0.4.1
+tenacity==9.1.4
+toml==0.10.2
+tornado==6.5.7
+typing-inspection==0.4.2
+typing_extensions==4.16.0
+tzdata==2026.3
+tzlocal==5.4.4
+urllib3==2.7.0
+uvicorn==0.34.0
+watchdog==6.0.0

@@ -400,9 +400,18 @@ and **no traceback**, Docker restarts it, and every logged-in user is bounced ba
 login screen. It reproduces only inside the running server, not in a standalone script, so
 `PYTHONFAULTHANDLER=1` is what surfaced the C-level stack.
 
-`pyarrow` and `numpy` are now pinned to the known-good pair. When debugging a crash with no
-Python traceback, set `PYTHONFAULTHANDLER=1` in the web service's `environment:` first —
-it turns a silent restart loop into a readable stack.
+**`constraints.txt` is the lock file.** It holds the full resolved tree (`pip freeze` from
+the known-good image) and the Dockerfile installs with
+`pip install -r requirements.txt -c constraints.txt`, so rebuilding an unchanged commit
+reinstalls identical versions. `requirements.txt` stays a list of direct dependencies only.
+
+To upgrade something on purpose: edit `requirements.txt`, `docker compose build --no-cache web`,
+regenerate with `docker compose run --rm web pip freeze > constraints.txt`, redeploy, and
+open the invoice list before committing. Do not hand-edit a single version in
+`constraints.txt` — that defeats the point.
+
+`PYTHONFAULTHANDLER=1` is set permanently on the web service (`docker-compose.yaml`).
+Leave it on: a native crash otherwise leaves nothing at all in the logs.
 
 ### Running locally (without Docker):
 ```bash
