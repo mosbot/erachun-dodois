@@ -35,6 +35,12 @@ def validate_invoice(session, invoice: Invoice, ubl: UBLInvoice) -> list:
     """Return list of human-readable blocking issues. Empty list = ready to upload."""
     issues = []
 
+    # Credit notes carry negative amounts and reverse a delivery rather than
+    # record one. Dodois has no supply shape for that, so they are handled
+    # manually in Office Manager.
+    if ubl.is_credit_note:
+        return ["Credit note (odobrenje) — Dodois upload is not supported"]
+
     mapping = session.query(SupplierMapping).filter_by(
         eracun_oib=invoice.sender_oib, enabled=True
     ).first()

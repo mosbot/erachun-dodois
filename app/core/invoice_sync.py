@@ -270,8 +270,8 @@ class InvoiceSyncService:
         invoice = Invoice(
             electronic_id=0,  # Manual upload, no eRačun ID
             document_nr=ubl.invoice_number,
-            document_type_id=1,
-            document_type_name="Račun",
+            document_type_id=381 if ubl.is_credit_note else 1,
+            document_type_name="Odobrenje" if ubl.is_credit_note else "Račun",
             sender_oib=ubl.supplier_oib,
             sender_name=ubl.supplier_name,
             invoice_number=ubl.invoice_number,

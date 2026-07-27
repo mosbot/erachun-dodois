@@ -175,6 +175,36 @@ Invoices contain base64-encoded PDF in:
 ### Line aggregation
 eRačun invoices (e.g., METRO) may have **duplicate lines** — same product appears multiple times with qty=1. These must be aggregated into a single line (sum quantities, recalculate totals) before uploading to Dodois.
 
+### Credit notes (Odobrenje) — different document, different sign
+
+Returns arrive as a **UBL `CreditNote` document**, not an `Invoice`: root element is
+`CreditNote` in namespace `…:CreditNote-2`, lines are `cac:CreditNoteLine` with
+`cbc:CreditedQuantity`. Everything below the line element (Item, Price, TaxTotal) is
+identical to an invoice, and `cac:LegalMonetaryTotal` / `cac:TaxTotal` live in the shared
+`cac` namespace — which is exactly why the bug was quiet: totals parsed fine while every
+line silently vanished (`.//cac:InvoiceLine` matches nothing).
+
+**Suppliers disagree on the sign.** UBL says a credit note carries positive amounts and the
+document type conveys the reversal; STANIĆ and Inter Alfa follow that, while Pivac and METRO
+pre-sign their XML negative. The parser therefore normalises with `-abs()`
+(`ubl_parser._normalise_amount`) so both conventions land on the same negative value and a
+credit note can never inflate a total. Applied to document totals, `tax_subtotals`, line
+`line_total` / `tax_amount` / `quantity`; `unit_price` stays positive because it is a rate.
+
+**Detection uses the root element, not the type code** — METRO stamps
+`CreditNoteTypeCode` 81 while everyone else uses 381. eRačun metadata reports
+`DocumentTypeId: 381 / "Odobrenje"` for all of them.
+
+Credit notes are **blocked from Dodois upload** (`validate_invoice`): a supply cannot express
+a reversal, so they are handled manually in Office Manager.
+
+Do NOT confuse with `DocumentTypeId: 386` (avansni račun / prepayment) — those are ordinary
+`Invoice` documents whose XML sign is already authoritative (suppliers issue both positive
+prepayments and negative reversals). They must not be normalised.
+
+Backfill for rows ingested before this landed: `scripts/backfill_credit_note_signs.py`
+(dry-run by default, `--apply` to commit).
+
 ---
 
 ## Dodois Integration (Stage 2)

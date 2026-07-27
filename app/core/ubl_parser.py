@@ -62,6 +62,12 @@ class UBLInvoice:
     # Each entry: {"percent": float, "taxable": float, "tax": float}
     tax_subtotals: List[dict] = field(default_factory=list)
 
+    # Document kind. Credit notes (odobrenje) arrive as UBL CreditNote
+    # documents; all their amounts are normalised to negative — see
+    # _normalise_amount.
+    is_credit_note: bool = False
+    document_type_code: str = ""
+
     # Line items
     lines: List[UBLLineItem] = field(default_factory=list)
 
@@ -83,6 +89,20 @@ def parse_ubl_xml(xml_content: Union[str, bytes]) -> UBLInvoice:
 
     root = etree.fromstring(xml_content)
     inv = UBLInvoice()
+
+    # Document kind. Croatian suppliers send credit notes as UBL CreditNote
+    # documents (root element), so that — not the type code — is the reliable
+    # signal: METRO stamps CreditNoteTypeCode 81 while the rest use 381.
+    inv.is_credit_note = etree.QName(root).localname == "CreditNote"
+    inv.document_type_code = (
+        _text(root, "cbc:CreditNoteTypeCode")
+        or _text(root, "cbc:InvoiceTypeCode")
+        or ""
+    )
+
+    def amount(value: float) -> float:
+        """Normalise a monetary value to the document's sign convention."""
+        return _normalise_amount(value, inv.is_credit_note)
 
     # Invoice number (direct child of root, not deep search)
     inv.invoice_number = _text(root, "cbc:ID") or ""
@@ -139,31 +159,35 @@ def parse_ubl_xml(xml_content: Union[str, bytes]) -> UBLInvoice:
     # Totals
     monetary = root.find(".//cac:LegalMonetaryTotal", NS)
     if monetary is not None:
-        inv.total_without_vat = _float(_text(monetary, "cbc:TaxExclusiveAmount"))
-        inv.total_with_vat = _float(_text(monetary, "cbc:TaxInclusiveAmount"))
-        inv.payable_amount = _float(_text(monetary, "cbc:PayableAmount"))
+        inv.total_without_vat = amount(_float(_text(monetary, "cbc:TaxExclusiveAmount")))
+        inv.total_with_vat = amount(_float(_text(monetary, "cbc:TaxInclusiveAmount")))
+        inv.payable_amount = amount(_float(_text(monetary, "cbc:PayableAmount")))
 
     # VAT total + per-rate breakdown (document-level TaxTotal)
     tax_total = root.find(".//cac:TaxTotal", NS)
     if tax_total is not None:
-        inv.total_vat = _float(_text(tax_total, "cbc:TaxAmount"))
+        inv.total_vat = amount(_float(_text(tax_total, "cbc:TaxAmount")))
         for sub in tax_total.findall("cac:TaxSubtotal", NS):
             cat = sub.find("cac:TaxCategory", NS)
             inv.tax_subtotals.append({
                 "percent": _float(_text(cat, "cbc:Percent")) if cat is not None else 0.0,
-                "taxable": _float(_text(sub, "cbc:TaxableAmount")),
-                "tax": _float(_text(sub, "cbc:TaxAmount")),
+                "taxable": amount(_float(_text(sub, "cbc:TaxableAmount"))),
+                "tax": amount(_float(_text(sub, "cbc:TaxAmount"))),
             })
 
-    # Line items
-    for line_el in root.findall(".//cac:InvoiceLine", NS):
+    # Line items. A CreditNote spells these cac:CreditNoteLine /
+    # cbc:CreditedQuantity; everything below the line element is identical.
+    line_tag = "cac:CreditNoteLine" if inv.is_credit_note else "cac:InvoiceLine"
+    qty_tag = "cbc:CreditedQuantity" if inv.is_credit_note else "cbc:InvoicedQuantity"
+
+    for line_el in root.findall(".//" + line_tag, NS):
         line = UBLLineItem()
         line.line_id = _text(line_el, "cbc:ID") or ""
-        line.quantity = _float(_text(line_el, "cbc:InvoicedQuantity"))
-        qty_el = line_el.find("cbc:InvoicedQuantity", NS)
+        line.quantity = amount(_float(_text(line_el, qty_tag)))
+        qty_el = line_el.find(qty_tag, NS)
         if qty_el is not None:
             line.unit_code = qty_el.get("unitCode", "")
-        line.line_total = _float(_text(line_el, "cbc:LineExtensionAmount"))
+        line.line_total = amount(_float(_text(line_el, "cbc:LineExtensionAmount")))
 
         # Price
         price_el = line_el.find(".//cac:Price/cbc:PriceAmount", NS)
@@ -199,7 +223,7 @@ def parse_ubl_xml(xml_content: Union[str, bytes]) -> UBLInvoice:
         # Tax amount on line
         line_tax = line_el.find(".//cac:TaxTotal/cbc:TaxAmount", NS)
         if line_tax is not None:
-            line.tax_amount = _float(line_tax.text)
+            line.tax_amount = amount(_float(line_tax.text))
 
         inv.lines.append(line)
 
@@ -290,6 +314,20 @@ def _float(val: Optional[str]) -> float:
         return float(val)
     except (ValueError, TypeError):
         return 0.0
+
+
+def _normalise_amount(value: float, is_credit_note: bool) -> float:
+    """Force credit-note amounts negative, leave invoice amounts alone.
+
+    Suppliers disagree on how to sign a credit note: UBL says the amounts are
+    positive and the document type carries the meaning (STANIĆ, Inter Alfa),
+    but Pivac and METRO pre-sign them negative in the XML. Taking ``-abs()``
+    lands both conventions on the same negative value, so a credit note can
+    never inflate a total regardless of who issued it.
+    """
+    if not is_credit_note:
+        return value
+    return -abs(value)
 
 
 def _parse_date(val: Optional[str]) -> Optional[datetime]:

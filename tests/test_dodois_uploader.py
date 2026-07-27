@@ -21,6 +21,19 @@ def test_validate_ok(session, metro_mapping, jalapeno_pm):
     assert issues == []
 
 
+def test_validate_blocks_credit_note(session, metro_mapping, jalapeno_pm):
+    """Credit notes must never be pushed to Dodois as a supply."""
+    inv = make_invoice()
+    ubl = make_ubl([
+        UBLLineItem(item_name="JALAPENO", quantity=-10, line_total=-50.0,
+                    tax_percent=25, tax_amount=-12.5),
+    ])
+    ubl.is_credit_note = True
+    issues = validate_invoice(session, inv, ubl)
+    assert len(issues) == 1
+    assert "odobrenje" in issues[0].lower()
+
+
 def test_validate_supplier_not_enabled(session):
     inv = make_invoice()
     ubl = make_ubl([])
