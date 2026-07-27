@@ -13,3 +13,14 @@ apscheduler==3.10.4
 lxml==5.3.0
 pandas==2.2.3
 pyotp==2.9.0
+
+# Transitive deps of streamlit/pandas, pinned because they are what the
+# runtime actually crashes on when left to float.
+#
+# pyarrow 25.0.0 (released 2026-07-10) segfaults inside
+# pandas_compat.convert_column when st.dataframe serialises the invoice
+# list, killing the Streamlit process and bouncing every user back to the
+# login screen. 24.0.0 is the build that ran in production for weeks.
+# See CLAUDE.md § "Dependency pinning".
+pyarrow==24.0.0
+numpy==2.5.1

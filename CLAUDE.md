@@ -385,6 +385,25 @@ If you send the XML KGM value (e.g. 30.176) as-is, the server rounds it to 0.03 
 
 ## Development Notes
 
+### Dependency pinning
+
+`requirements.txt` pins direct dependencies, but **transitive ones float unless
+explicitly listed** — and `docker compose up --build` re-resolves them whenever the
+`pip install` layer cache misses. A rebuild is therefore not a no-op: it can silently swap
+the runtime under unchanged code.
+
+This bit us on 2026-07-27. The image last built on 2026-07-07 had `pyarrow 24.0.0`; a
+rebuild that day picked up `pyarrow 25.0.0` (released 2026-07-10), the only package that
+had moved. It **segfaults** inside `pyarrow/pandas_compat.py::convert_column` when
+`st.dataframe` serialises the invoice list — the Streamlit process dies with exit code 0
+and **no traceback**, Docker restarts it, and every logged-in user is bounced back to the
+login screen. It reproduces only inside the running server, not in a standalone script, so
+`PYTHONFAULTHANDLER=1` is what surfaced the C-level stack.
+
+`pyarrow` and `numpy` are now pinned to the known-good pair. When debugging a crash with no
+Python traceback, set `PYTHONFAULTHANDLER=1` in the web service's `environment:` first —
+it turns a silent restart loop into a readable stack.
+
 ### Running locally (without Docker):
 ```bash
 pip install -r requirements.txt
