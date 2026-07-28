@@ -67,6 +67,15 @@ class Invoice(Base):
     dodois_skipped_count = Column(Integer, default=0)
     dodois_skipped_lines = Column(Text, nullable=True)  # JSON list of skipped descriptions
 
+    # PlanFact integration
+    # planfact_operation_id is the queue marker: NULL means "not posted yet".
+    planfact_operation_id = Column(String(64), nullable=True, index=True)
+    # Match key against PlanFact. Wolt: our invoice number. Glovo: the inner
+    # number from the line item ("račun broj: 47284-1-5-2026").
+    planfact_external_id = Column(String(100), nullable=True, index=True)
+    planfact_posted_at = Column(DateTime, nullable=True)
+    planfact_error = Column(Text, nullable=True)
+
     # Timestamps from eRačun
     eracun_sent = Column(DateTime, nullable=True)
     eracun_delivered = Column(DateTime, nullable=True)
