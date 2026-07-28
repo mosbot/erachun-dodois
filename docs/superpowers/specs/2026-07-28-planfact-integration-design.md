@@ -150,11 +150,16 @@ The buyer party is excluded on purpose — it is what produced the false matches
 Patterns move to `config.yaml` so a third pizzeria needs no code change:
 
 ```yaml
-pizzerias:
-  zagreb-1: [65e990340c64206ab0881c8c, kranjčevićeva, kranjceviceva,
-             trešnjevka, tresnjevka, P705447, TRATINSKA]
-  zagreb-2: [67e560daff93ab813b57e0c2, maksimirska, P825763]
+pizzeria_detection:
+  Zagreb-1: [65e990340c64206ab0881c8c, kranjčevićeva, kranjceviceva,
+             trešnjevka, tresnjevka, P705447, TRATIN]
+  Zagreb-2: [67e560daff93ab813b57e0c2, maksimirska, MAKSIMIR, P825763]
 ```
+
+Keys are the display names, because that is exactly what `_detect_pizzeria`
+returns and what `invoices.dodois_pizzeria` stores — `Zagreb-1`, not `zagreb-1`.
+The lowercase form is only a key inside `dodois.pizzerias`. Keeping one spelling
+avoids a case-mapping layer.
 
 If patterns for two different pizzerias match the same document, return `None` and
 log a warning. Guessing is worse than not posting.
@@ -261,7 +266,7 @@ planfact:
   enabled: true
   base_url: https://api.planfact.io/api/v1
   accounts:   {wolt: 666927, glovo: 666928}
-  projects:   {zagreb-1: 1172400, zagreb-2: 1198217}
+  projects:   {Zagreb-1: 1172400, Zagreb-2: 1198217}   # keyed by dodois_pizzeria
   categories:
     wolt_commission: 8563181
     glovo_commission: 8563431
