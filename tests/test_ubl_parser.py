@@ -297,3 +297,98 @@ def test_vat_date_ignores_invoice_period_end():
 def test_credit_note_vat_date_uses_tax_point():
     ubl = parse_ubl_xml(_credit_note())
     assert resolve_vat_date(ubl).strftime("%Y-%m-%d") == "2026-06-09"
+
+
+# ── Pizzeria detection ───────────────────────────────────────────────────────
+
+def _wolt_invoice(delivery_location_id="", delivery_street="",
+                  buyer_street="Trgovacka Ulica - Via Merceria 147"):
+    loc = ""
+    if delivery_location_id or delivery_street:
+        loc = f"""    <cac:DeliveryLocation>
+      <cbc:ID>{delivery_location_id}</cbc:ID>
+      <cac:Address><cbc:StreetName>{delivery_street}</cbc:StreetName></cac:Address>
+    </cac:DeliveryLocation>
+"""
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Invoice {INV_NS}>
+  <cbc:ID>90247-2553198637711-2026</cbc:ID>
+  <cbc:IssueDate>2026-07-10</cbc:IssueDate>
+  <cac:AccountingCustomerParty><cac:Party>
+    <cac:PostalAddress><cbc:StreetName>{buyer_street}</cbc:StreetName></cac:PostalAddress>
+  </cac:Party></cac:AccountingCustomerParty>
+  <cac:Delivery>
+    <cbc:ActualDeliveryDate>2026-07-10</cbc:ActualDeliveryDate>
+{loc}  </cac:Delivery>
+  <cac:LegalMonetaryTotal>
+    <cbc:TaxExclusiveAmount>100.00</cbc:TaxExclusiveAmount>
+  </cac:LegalMonetaryTotal>
+</Invoice>"""
+
+
+def _glovo_invoice(item_name):
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Invoice {INV_NS}>
+  <cbc:ID>2653343/G1/2234278</cbc:ID>
+  <cbc:IssueDate>2026-07-22</cbc:IssueDate>
+  <cac:LegalMonetaryTotal>
+    <cbc:TaxExclusiveAmount>209.78</cbc:TaxExclusiveAmount>
+  </cac:LegalMonetaryTotal>
+  <cac:InvoiceLine>
+    <cbc:ID>1</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="H87">1</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount>209.78</cbc:LineExtensionAmount>
+    <cac:Item><cbc:Name>{item_name}</cbc:Name></cac:Item>
+  </cac:InvoiceLine>
+</Invoice>"""
+
+
+def test_pizzeria_from_wolt_delivery_location_id():
+    ubl = parse_ubl_xml(_wolt_invoice(
+        delivery_location_id="4ujG1qM.65e990340c64206ab0881c8c"))
+    assert ubl.delivery_pizzeria == "Zagreb-1"
+
+
+def test_pizzeria_from_wolt_delivery_street():
+    ubl = parse_ubl_xml(_wolt_invoice(delivery_street="Maksimirska cesta 120"))
+    assert ubl.delivery_pizzeria == "Zagreb-2"
+
+
+def test_buyer_address_is_never_used_for_detection():
+    """Real case: buyer moved to Maksimirska while delivery stayed Kranjčevićeva."""
+    ubl = parse_ubl_xml(_wolt_invoice(
+        delivery_street="Kranjčevićeva ulica 1",
+        buyer_street="Maksimirska cesta 120"))
+    assert ubl.delivery_pizzeria == "Zagreb-1"
+
+
+def test_no_delivery_location_yields_none():
+    ubl = parse_ubl_xml(_wolt_invoice())
+    assert ubl.delivery_pizzeria is None
+
+
+def test_pizzeria_from_glovo_p_code():
+    ubl = parse_ubl_xml(_glovo_invoice(
+        "Glovo provizija P705447 račun broj: 47262-1-5-2026"))
+    assert ubl.delivery_pizzeria == "Zagreb-1"
+
+
+def test_pizzeria_from_glovo_p_code_zagreb2():
+    ubl = parse_ubl_xml(_glovo_invoice(
+        "Glovo provizija P825763 račun broj: 47284-1-5-2026"))
+    assert ubl.delivery_pizzeria == "Zagreb-2"
+
+
+def test_ambiguous_document_yields_none():
+    """Two pizzerias matched — refuse rather than guess."""
+    ubl = parse_ubl_xml(_wolt_invoice(
+        delivery_location_id="65e990340c64206ab0881c8c",
+        delivery_street="Maksimirska cesta 120"))
+    assert ubl.delivery_pizzeria is None
+
+
+def test_custom_patterns_override_defaults():
+    ubl = parse_ubl_xml(
+        _wolt_invoice(delivery_street="Nova Ulica 5"),
+        pizzeria_patterns={"Zagreb-3": ["NOVA ULICA"]})
+    assert ubl.delivery_pizzeria == "Zagreb-3"

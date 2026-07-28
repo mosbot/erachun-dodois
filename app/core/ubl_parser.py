@@ -83,7 +83,8 @@ class UBLInvoice:
     embedded_pdf_b64: Optional[str] = None
 
 
-def parse_ubl_xml(xml_content: Union[str, bytes]) -> UBLInvoice:
+def parse_ubl_xml(xml_content: Union[str, bytes],
+                  pizzeria_patterns: Optional[dict] = None) -> UBLInvoice:
     """Parse a UBL 2.1 Invoice XML into structured data."""
     if isinstance(xml_content, str):
         xml_content = xml_content.encode("utf-8")
@@ -236,7 +237,8 @@ def parse_ubl_xml(xml_content: Union[str, bytes]) -> UBLInvoice:
         inv.lines.append(line)
 
     # Detect delivery pizzeria from delivery info and notes
-    inv.delivery_pizzeria = _detect_pizzeria(root)
+    inv.delivery_pizzeria = _detect_pizzeria(
+        root, pizzeria_patterns or DEFAULT_PIZZERIA_PATTERNS)
 
     # Embedded PDF (AdditionalDocumentReference with mimeCode application/pdf)
     for doc_ref in root.findall(".//cac:AdditionalDocumentReference", NS):
@@ -250,47 +252,69 @@ def parse_ubl_xml(xml_content: Union[str, bytes]) -> UBLInvoice:
     return inv
 
 
-def _detect_pizzeria(root) -> Optional[str]:
-    """Detect delivery pizzeria from XML delivery info and notes.
+# Patterns are matched case-insensitively against delivery-related text only.
+# Keys are the display names stored in ``invoices.dodois_pizzeria``.
+DEFAULT_PIZZERIA_PATTERNS = {
+    "Zagreb-1": [
+        "TRATIN",                          # food suppliers' spelling
+        "KRANJČEVIĆEVA", "KRANJCEVICEVA",  # Wolt / Glovo delivery street
+        "TREŠNJEVKA", "TRESNJEVKA",
+        "P705447",                         # Glovo venue code
+        "65E990340C64206AB0881C8C",        # Wolt venue id
+    ],
+    "Zagreb-2": [
+        "MAKSIMIR",
+        "P825763",
+        "67E560DAFF93AB813B57E0C2",
+    ],
+}
 
-    Checks DeliveryParty/Name, DeliveryAddress/StreetName,
-    DeliveryAddress/Line, and cbc:Note for known keywords.
 
-    Rules:
-        TRATINSKA -> zagreb-1
-        MAKSIMIRSKA / MAKSIMIR -> zagreb-2
+def _delivery_hints(root) -> str:
+    """Collect text that may name the delivery point.
+
+    Deliberately excludes cac:AccountingCustomerParty: the company's registered
+    address is not where the goods went, and reading it made Wolt invoices
+    delivered to Kranjčevićeva look like Maksimirska ones.
     """
     hints = []
 
-    # DeliveryParty name and address
-    for xpath in [
-        ".//cac:Delivery/cac:DeliveryParty/cac:PartyName/cbc:Name",
-        ".//cac:Delivery/cac:DeliveryLocation/cac:Address/cbc:StreetName",
-        ".//cac:Delivery/cac:DeliveryLocation/cac:Address/cac:AddressLine/cbc:Line",
-        ".//cac:Delivery/cac:DeliveryParty/cac:PostalAddress/cbc:StreetName",
-        ".//cac:Delivery/cac:DeliveryParty/cac:PostalAddress/cac:AddressLine/cbc:Line",
-    ]:
-        el = root.find(xpath, NS)
-        if el is not None and el.text:
-            hints.append(el.text.upper())
+    delivery = root.find(".//cac:Delivery", NS)
+    if delivery is not None:
+        for el in delivery.iter():
+            if el.text and el.text.strip():
+                hints.append(el.text)
 
-    # OrderReference/ID (used by KRISTY — puts delivery address in purchase-order ref)
-    for oref in root.findall(".//cac:OrderReference/cbc:ID", NS):
-        if oref.text:
-            hints.append(oref.text.upper())
+    for xpath in (".//cac:OrderReference/cbc:ID",
+                  "cbc:Note",
+                  ".//cac:InvoiceLine/cac:Item/cbc:Name",
+                  ".//cac:CreditNoteLine/cac:Item/cbc:Name"):
+        for el in root.findall(xpath, NS):
+            if el.text and el.text.strip():
+                hints.append(el.text)
 
-    # Note field (used by FRESCO, etc.)
-    for note_el in root.findall("cbc:Note", NS):
-        if note_el.text:
-            hints.append(note_el.text.upper())
+    return " ".join(hints).upper()
 
-    combined = " ".join(hints)
 
-    if "TRATIN" in combined:
-        return "Zagreb-1"
-    if "MAKSIMIR" in combined:
-        return "Zagreb-2"
+def _detect_pizzeria(root, patterns: dict) -> Optional[str]:
+    """Detect the delivery pizzeria, or None when it cannot be told apart.
 
+    Returns None when two different pizzerias match — a document that names
+    both is a data problem, and booking it to a guessed one is worse than
+    leaving it for a human.
+    """
+    combined = _delivery_hints(root)
+    matched = {
+        name for name, pats in patterns.items()
+        if any(p.upper() in combined for p in pats)
+    }
+    if len(matched) == 1:
+        return matched.pop()
+    if len(matched) > 1:
+        logger.warning(
+            "Ambiguous pizzeria detection: %s matched on one document",
+            ", ".join(sorted(matched)),
+        )
     return None
 
 

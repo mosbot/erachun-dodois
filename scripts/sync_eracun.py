@@ -76,6 +76,7 @@ def main() -> int:
             session_factory=session_factory,
             pdf_dir=storage.get("pdf_dir", "/app/data/pdfs"),
             xml_dir=storage.get("xml_dir", "/app/data/xmls"),
+            pizzeria_patterns=cfg.get("pizzeria_detection"),
         )
         logger.info("Starting sync (lookback_days=%d)", lookback_days)
         result = service.sync(lookback_days=lookback_days)

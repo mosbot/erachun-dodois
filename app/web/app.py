@@ -1873,6 +1873,7 @@ def sync_invoices():
             session_factory=get_db(),
             pdf_dir=storage.get("pdf_dir", "/app/data/pdfs"),
             xml_dir=storage.get("xml_dir", "/app/data/xmls"),
+            pizzeria_patterns=cfg.get("pizzeria_detection"),
         )
         result = sync_service.sync(
             lookback_days=cfg.get("sync", {}).get("lookback_days", 90)

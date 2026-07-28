@@ -29,6 +29,7 @@ class InvoiceSyncService:
         session_factory,
         pdf_dir: str = "/app/data/pdfs",
         xml_dir: str = "/app/data/xmls",
+        pizzeria_patterns: Optional[dict] = None,
     ):
         self.eracun = eracun_client
         self.session_factory = session_factory
@@ -36,6 +37,7 @@ class InvoiceSyncService:
         self.xml_dir = Path(xml_dir)
         self.pdf_dir.mkdir(parents=True, exist_ok=True)
         self.xml_dir.mkdir(parents=True, exist_ok=True)
+        self.pizzeria_patterns = pizzeria_patterns
 
     def sync(
         self,
@@ -202,7 +204,7 @@ class InvoiceSyncService:
                 invoice.xml_path = xml_filename
 
                 # Parse UBL
-                ubl = parse_ubl_xml(xml_content)
+                ubl = parse_ubl_xml(xml_content, self.pizzeria_patterns)
                 invoice.invoice_number = ubl.invoice_number or item.document_nr
                 invoice.issue_date = ubl.issue_date
                 invoice.due_date = ubl.due_date
@@ -250,7 +252,7 @@ class InvoiceSyncService:
         except UnicodeDecodeError:
             xml_content = Path(xml_path).read_bytes().decode("utf-8", errors="replace")
 
-        ubl = parse_ubl_xml(xml_content)
+        ubl = parse_ubl_xml(xml_content, self.pizzeria_patterns)
 
         # Check for duplicates by invoice number + supplier (ignore deleted)
         existing = (

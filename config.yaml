@@ -12,6 +12,13 @@ eracun:
   company_id: "52219073449"  # OIB of Orange food business d.o.o.
   company_bu: ""        # Business Unit (optional)
 
+# Pizzeria detection patterns, matched against delivery fields, notes and line
+# item names. Keys must match invoices.dodois_pizzeria exactly.
+pizzeria_detection:
+  Zagreb-1: ["TRATIN", "KRANJČEVIĆEVA", "KRANJCEVICEVA", "TREŠNJEVKA",
+             "TRESNJEVKA", "P705447", "65E990340C64206AB0881C8C"]
+  Zagreb-2: ["MAKSIMIR", "P825763", "67E560DAFF93AB813B57E0C2"]
+
 # Sync settings
 sync:
   interval_minutes: 30        # How often to check for new invoices
