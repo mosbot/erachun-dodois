@@ -1,5 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
+import requests
 
 from app.core.planfact_client import PlanfactClient, PlanfactError
 
@@ -67,3 +68,37 @@ def test_list_operations_paginates():
     ops = _client(s).list_operations(666927, "2026-07-01", "2026-07-31")
     assert len(ops) == 101
     assert s.post.call_count == 2
+
+
+def test_create_outcome_accepts_204_no_content():
+    """A 204 No Content (empty success) must be treated as success."""
+    s = MagicMock()
+    s.post.return_value = _response(status=204, text="")
+    assert _client(s).create_outcome({"value": 1}) == {}
+
+
+def test_list_operations_retries_5xx_then_raises():
+    """5xx errors during list_operations are retried and then raise PlanfactError."""
+    s = MagicMock()
+    s.post.return_value = _response(status=503, text="service unavailable")
+    with pytest.raises(PlanfactError):
+        _client(s).list_operations(666927, "2026-07-01", "2026-07-31")
+    assert s.post.call_count == 3
+
+
+def test_list_operations_wraps_timeout_in_planfact_error():
+    """Timeout exceptions during list_operations are caught, retried, and wrapped."""
+    s = MagicMock()
+    s.post.side_effect = requests.Timeout("request timed out")
+    with pytest.raises(PlanfactError, match="Timeout"):
+        _client(s).list_operations(666927, "2026-07-01", "2026-07-31")
+    assert s.post.call_count == 3
+
+
+def test_create_outcome_wraps_connection_error():
+    """ConnectionError during create_outcome is retried and wrapped in PlanfactError."""
+    s = MagicMock()
+    s.post.side_effect = requests.ConnectionError("connection refused")
+    with pytest.raises(PlanfactError, match="ConnectionError"):
+        _client(s).create_outcome({"value": 1})
+    assert s.post.call_count == 3
