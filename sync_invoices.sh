@@ -37,10 +37,15 @@ run() {
 
   # Post Wolt/Glovo invoices to PlanFact. Runs under the same flock, so it
   # never overlaps itself and always sees freshly synced invoices. A failure
-  # here must not mask a sync failure, so the sync's rc is what we return.
+  # here must not mask a sync failure, so we protect it from set -e and
+  # return the sync's rc regardless of PlanFact's outcome.
   echo "[$(ts)] planfact start"
-  ${COMPOSE} exec -T web python scripts/post_to_planfact.py
-  echo "[$(ts)] planfact done rc=$?"
+  if ${COMPOSE} exec -T web python scripts/post_to_planfact.py; then
+    local pf_rc=0
+  else
+    local pf_rc=$?
+  fi
+  echo "[$(ts)] planfact done rc=${pf_rc}"
 
   return ${rc}
 }
