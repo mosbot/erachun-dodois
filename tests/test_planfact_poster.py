@@ -220,3 +220,67 @@ def test_dry_run_never_posts():
     assert op_id is None
     assert err is None
     client.create_outcome.assert_not_called()
+
+
+def test_post_invoice_catches_planfact_error_from_list_operations():
+    """PlanfactError from client.list_operations is caught and returned as error."""
+    from app.core.planfact_client import PlanfactError
+    client = MagicMock()
+    client.list_operations.side_effect = PlanfactError("API returned 500")
+    op_id, err = post_invoice(client, CFG, _inv(), "")
+    assert op_id is None
+    assert "API returned 500" in err
+    client.create_outcome.assert_not_called()
+
+
+def test_post_invoice_catches_unexpected_exception_from_create_outcome():
+    """Unexpected exceptions from client.create_outcome are caught."""
+    client = MagicMock()
+    client.list_operations.return_value = []
+    client.create_outcome.side_effect = ValueError("bad json")
+    op_id, err = post_invoice(client, CFG, _inv(), "")
+    assert op_id is None
+    assert "Unexpected error" in err
+    assert "bad json" in err
+
+
+def test_validate_invoice_checks_account_configured():
+    """Missing account entry for a resolved provider is a blocking issue."""
+    cfg_no_account = {
+        "planfact": {
+            "accounts": {"glovo": 666928},  # missing "wolt"
+            "projects": {"Zagreb-1": 1172400},
+            "categories": {"wolt_commission": 8563181, "glovo_commission": 8563431, "vat": 9485374},
+            "providers": {"wolt": {"oib": "25531986377"}},
+        }
+    }
+    issues = validate_invoice(cfg_no_account, _inv(), "wolt", "90247-2553198637711-2026")
+    assert any("account" in i.lower() for i in issues)
+
+
+def test_validate_invoice_checks_commission_category_configured():
+    """Missing commission category for a resolved provider is a blocking issue."""
+    cfg_no_cat = {
+        "planfact": {
+            "accounts": {"wolt": 666927},
+            "projects": {"Zagreb-1": 1172400},
+            "categories": {"glovo_commission": 8563431, "vat": 9485374},  # missing "wolt_commission"
+            "providers": {"wolt": {"oib": "25531986377"}},
+        }
+    }
+    issues = validate_invoice(cfg_no_cat, _inv(), "wolt", "90247-2553198637711-2026")
+    assert any("commission" in i.lower() for i in issues)
+
+
+def test_validate_invoice_checks_vat_category_configured():
+    """Missing VAT category is a blocking issue."""
+    cfg_no_vat = {
+        "planfact": {
+            "accounts": {"wolt": 666927},
+            "projects": {"Zagreb-1": 1172400},
+            "categories": {"wolt_commission": 8563181, "glovo_commission": 8563431},  # missing "vat"
+            "providers": {"wolt": {"oib": "25531986377"}},
+        }
+    }
+    issues = validate_invoice(cfg_no_vat, _inv(), "wolt", "90247-2553198637711-2026")
+    assert any("vat" in i.lower() for i in issues)

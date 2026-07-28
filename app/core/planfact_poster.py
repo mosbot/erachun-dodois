@@ -61,6 +61,16 @@ def validate_invoice(cfg: dict, invoice: Invoice, provider: Optional[str],
         issues.append("Unknown provider — supplier OIB is not Wolt or Glovo")
         return issues
 
+    # Check that provider is configured in accounts and categories
+    accounts = pf.get("accounts", {}) or {}
+    categories = pf.get("categories", {}) or {}
+    if provider not in accounts:
+        issues.append(f"Provider {provider} is not configured in PlanFact accounts")
+    if f"{provider}_commission" not in categories:
+        issues.append(f"Commission category for {provider} is not configured")
+    if "vat" not in categories:
+        issues.append("VAT category is not configured")
+
     series = (invoice.invoice_number or "").split("-")
     excluded = (pf.get("providers", {}).get(provider, {}) or {}).get(
         "exclude_series", []) or []
@@ -211,3 +221,6 @@ def post_invoice(client, cfg: dict, invoice: Invoice, xml_text: str,
 
     except PlanfactError as exc:
         return None, str(exc)
+    except Exception as exc:
+        logger.exception("Unexpected error posting invoice %s", invoice.invoice_number)
+        return None, f"Unexpected error: {exc}"
