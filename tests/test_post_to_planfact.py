@@ -372,3 +372,37 @@ def test_main_notifies_on_unexpected_runtime_exception(module):
     assert rc == 2
     notify.assert_called_once()
     fake_session.close.assert_called_once()
+
+
+# ── Deliberate skips must not alert ──────────────────────────────────────────
+
+def test_process_one_does_not_alert_on_a_blocked_invoice(module):
+    """Wolt Drive arrives twice a month and is never booked — alerting on each
+    one would train the reader to ignore alerts."""
+    session = MagicMock()
+    invoice = _invoice()
+    blocked = module.BLOCKED_PREFIX + "Wolt Drive invoice — not booked to PlanFact"
+
+    with patch.object(module, "post_invoice", return_value=(None, blocked)), \
+         patch.object(module, "_notify_failure", return_value=True) as notify:
+        result = module.process_one(session, MagicMock(), TELEGRAM_CFG, invoice,
+                                    Path("/tmp"), dry_run=False)
+
+    assert result == "failed"
+    notify.assert_not_called()                 # nothing sent to Telegram
+    assert invoice.planfact_error == blocked   # but the reason is recorded
+    session.commit.assert_called_once()
+
+
+def test_process_one_still_alerts_on_a_real_failure(module):
+    session = MagicMock()
+    invoice = _invoice()
+
+    with patch.object(module, "post_invoice",
+                      return_value=(None, "PlanFact rejected: boom")), \
+         patch.object(module, "_notify_failure", return_value=True) as notify:
+        module.process_one(session, MagicMock(), TELEGRAM_CFG, invoice, Path("/tmp"),
+                           dry_run=False)
+
+    notify.assert_called_once()
+    assert invoice.planfact_error == "PlanFact rejected: boom"

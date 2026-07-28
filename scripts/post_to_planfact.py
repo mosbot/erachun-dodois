@@ -27,7 +27,9 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from app.core.config_loader import load_config, get_database_url, get_storage_config
 from app.core.planfact_client import PlanfactClient
-from app.core.planfact_poster import post_invoice, select_candidates, should_notify
+from app.core.planfact_poster import (
+    BLOCKED_PREFIX, post_invoice, select_candidates, should_notify,
+)
 from app.core.telegram_notifier import send_alert
 from app.db.models import get_engine, get_session_factory, Invoice
 
@@ -136,7 +138,12 @@ def process_one(session, client, cfg: dict, invoice: Invoice, xml_dir: Path,
             return "posted"
 
         if error:
-            notify = should_notify(invoice.planfact_error, error)
+            # A "Blocked:" error is a deliberate exclusion, not a failure —
+            # Wolt Drive invoices arrive twice a month and are never booked,
+            # and an alert for each one only teaches the reader to ignore
+            # alerts. The reason is still recorded and shown in the UI.
+            blocked = error.startswith(BLOCKED_PREFIX)
+            notify = (not blocked) and should_notify(invoice.planfact_error, error)
             if not dry_run:
                 if notify and _alerting_configured(cfg):
                     # The persisted planfact_error means "this failure has
@@ -171,7 +178,10 @@ def process_one(session, client, cfg: dict, invoice: Invoice, xml_dir: Path,
                     # for weeks (finding I4).
                     invoice.planfact_error = error
                     session.commit()
-            logger.error("FAILED  %s: %s", invoice.invoice_number, error)
+            if blocked:
+                logger.info("SKIPPED %s: %s", invoice.invoice_number, error)
+            else:
+                logger.error("FAILED  %s: %s", invoice.invoice_number, error)
             return "failed"
 
         logger.info("WOULD POST  %s (%.2f EUR, %s)",

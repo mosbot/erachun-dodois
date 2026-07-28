@@ -171,6 +171,9 @@ def select_candidates(session, cfg: dict, limit: Optional[int] = None) -> list:
 
 
 COMMENT_MARKER = "#erachun"
+# Prefix on errors that mean "this invoice is deliberately not posted" rather
+# than "posting was attempted and went wrong". Callers use it to stay quiet.
+BLOCKED_PREFIX = "Blocked: "
 # How far either side of the VAT date to look for an existing operation.
 LOOKUP_WINDOW_DAYS = 3
 
@@ -247,7 +250,10 @@ def post_invoice(client, cfg: dict, invoice: Invoice, xml_text: str,
 
     issues = validate_invoice(cfg, invoice, provider, external_id)
     if issues:
-        return None, "; ".join(issues)
+        # Marked so callers can tell a deliberate skip from a real failure.
+        # Wolt Drive arrives twice a month and is never booked by design;
+        # alerting on it trains the reader to ignore alerts.
+        return None, BLOCKED_PREFIX + "; ".join(issues)
 
     try:
         existing = find_existing_operation(client, cfg, invoice, provider, external_id)
