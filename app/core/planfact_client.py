@@ -18,6 +18,14 @@ import requests
 logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 100
+# Hard cap on pagination. Verified: a server that ignores paging.offset was
+# still issuing requests after 501 iterations, which hangs list_operations
+# inside the flock in sync_invoices.sh -- every later cron tick then prints
+# "another sync in progress, skipping" and exits 0, silently stopping
+# eRačun ingestion too. Once the cap is hit we raise rather than return a
+# partial list: a partial list looks exactly like "no existing operation"
+# to the caller and would risk posting a duplicate.
+MAX_PAGES = 50
 
 
 class PlanfactError(RuntimeError):
@@ -99,10 +107,15 @@ class PlanfactClient:
 
     def list_operations(self, account_id: int,
                         date_from: str, date_to: str) -> list:
-        """Return every operation on an account within an inclusive date range."""
+        """Return every operation on an account within an inclusive date range.
+
+        Raises PlanfactError if MAX_PAGES is exhausted instead of returning
+        whatever was collected so far — see MAX_PAGES for why a partial
+        list is worse than an explicit failure here.
+        """
         url = f"{self.base_url}/operations/list"
         out, offset = [], 0
-        while True:
+        for _ in range(MAX_PAGES):
             r = self._request_with_retries(
                 "post",
                 url,
@@ -115,7 +128,16 @@ class PlanfactClient:
                 raise PlanfactError(
                     f"list_operations HTTP {r.status_code}: {(r.text or '')[:300]}")
             items = ((r.json().get("data") or {}).get("items") or [])
+            if not items:
+                return out
             out.extend(items)
             if len(items) < PAGE_SIZE:
                 return out
             offset += PAGE_SIZE
+
+        raise PlanfactError(
+            f"list_operations exceeded MAX_PAGES={MAX_PAGES} for account "
+            f"{account_id} ({date_from}..{date_to}) without reaching a short "
+            f"or empty page — aborting rather than returning a partial list, "
+            f"which would look like 'no existing operation' to the caller "
+            f"and risk posting a duplicate")
