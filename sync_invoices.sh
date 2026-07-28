@@ -34,6 +34,14 @@ run() {
   ${COMPOSE} exec -T web python scripts/sync_eracun.py
   local rc=$?
   echo "[$(ts)] sync done rc=${rc}"
+
+  # Post Wolt/Glovo invoices to PlanFact. Runs under the same flock, so it
+  # never overlaps itself and always sees freshly synced invoices. A failure
+  # here must not mask a sync failure, so the sync's rc is what we return.
+  echo "[$(ts)] planfact start"
+  ${COMPOSE} exec -T web python scripts/post_to_planfact.py
+  echo "[$(ts)] planfact done rc=$?"
+
   return ${rc}
 }
 

@@ -398,6 +398,41 @@ If you send the XML KGM value (e.g. 30.176) as-is, the server rounds it to 0.03 
 
 ---
 
+## PlanFact Integration
+
+Wolt and Glovo invoices are posted to PlanFact as outcome operations by
+`scripts/post_to_planfact.py`, which `sync_invoices.sh` runs right after the
+eRačun sync. This replaced the standalone `pdf2planfact` service, which parsed
+the same invoices out of PDFs in Gmail and silently dropped any message whose
+processing failed.
+
+Each operation carries two items — commission (`total_without_vat`) and input
+VAT (`total_vat`) — against the Wolt/Glovo account and the Zagreb-1/Zagreb-2
+project. `operationDate` is `vat_date`, which reproduces the billing-period end
+the old service computed from the PDF.
+
+**Not posted:** Wolt Drive (invoice-number series `2553198637741` — a separate
+contract with no venue), credit notes, and anything whose pizzeria cannot be
+determined.
+
+**Deduplication is ours.** PlanFact does not enforce `externalId` uniqueness —
+five duplicated operations from the old service prove it. Before each POST the
+poster lists operations within ±3 days of `vat_date` and looks for the external
+id. Wolt's external id is our invoice number; Glovo's is the inner number from
+the line item (`Glovo provizija P705447 račun broj: 47284-1-5-2026`), because
+eRačun and PlanFact number Glovo invoices differently.
+
+Run `scripts/reconcile_planfact.py --apply` once on a database that predates the
+integration: it adds the `planfact_*` columns and marks what the old service
+already posted.
+
+**Failures go to the admin only** (`telegram.alerts_chat_id`), not to the
+per-pizzeria topics used for Dodois upload notifications — restaurant staff
+cannot act on a PlanFact error. A notification is sent only when the failure is
+new or its text changed, because the job retries every 30 minutes.
+
+---
+
 ## TODO
 
 ### Done (historical reference):
