@@ -68,15 +68,16 @@ ssh ask@er.dodotool.com
 cd /opt/erachun-dodois
 git pull
 docker compose down && docker compose up --build -d
+docker compose exec web python scripts/reconcile_planfact.py
 docker compose exec web python scripts/reconcile_planfact.py --apply
 ```
 
-The `reconcile_planfact.py --apply` step is not optional and must run before anyone
-opens the portal: the `Invoice` model maps four `planfact_*` columns, so every
-`session.query(Invoice)` raises `UndefinedColumn` against a database that hasn't had
-them added yet. The script adds the columns even if `planfact.api_key` isn't
-configured on the server yet — see the ordering rationale in the script's own
-docstring.
+The `reconcile_planfact.py` step is not optional and must run before anyone opens the portal:
+the `Invoice` model maps four `planfact_*` columns, so every `session.query(Invoice)` raises
+`UndefinedColumn` against a database that hasn't had them added yet. Run without `--apply`
+first to preview the reconcile (it will report expected counts), then run with `--apply` to
+commit. The script adds the columns even if `planfact.api_key` isn't configured on the server
+yet — see the ordering rationale in the script's own docstring.
 
 HTTPS automatic via Caddy + Let's Encrypt. Local secrets live in `config.local.yaml` on the server (not in git).
 

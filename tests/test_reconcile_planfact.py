@@ -122,7 +122,7 @@ def test_main_ensures_columns_only_after_successful_fetch(module):
 
     def fake_fetch(client, accounts):
         calls.append("fetch_posted_operations")
-        return {}
+        return {("wolt", "inv-1"): "op-1"}
 
     fake_session = MagicMock()
     fake_session.query.return_value.filter.return_value.filter.return_value \
@@ -147,12 +147,28 @@ def test_main_dry_run_with_missing_columns_after_successful_fetch(module):
     with patch.object(module, "load_config", return_value=CFG_WITH_KEY), \
          patch.object(module, "get_engine", return_value=object()), \
          patch.object(module, "ensure_columns", return_value=False) as ensure, \
-         patch.object(module, "fetch_posted_operations", return_value={}) as fetch:
+         patch.object(module, "fetch_posted_operations",
+                      return_value={("wolt", "inv-1"): "op-1"}) as fetch:
         rc = module.main(False)
 
     assert rc == 1
     fetch.assert_called_once()
     ensure.assert_called_once()
+
+
+def test_main_empty_fetch_result_skips_ddl_and_exits_nonzero(module):
+    """If PlanFact returns no operations when ~126 are expected, treat it as
+    a failed reconcile. The columns must not be added with nothing marked,
+    or the very next cron tick re-posts every historical invoice as a
+    duplicate."""
+    with patch.object(module, "load_config", return_value=CFG_WITH_KEY), \
+         patch.object(module, "get_engine", return_value=object()), \
+         patch.object(module, "ensure_columns") as ensure, \
+         patch.object(module, "fetch_posted_operations", return_value={}):
+        rc = module.main(True)
+
+    assert rc == 2
+    ensure.assert_not_called()
 
 
 if __name__ == "__main__":

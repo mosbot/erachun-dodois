@@ -138,6 +138,16 @@ def main(apply_changes: bool) -> int:
               "invoice as new and create duplicates in PlanFact.")
         return 2
 
+    if not posted:
+        print(f"\nRECONCILE DID NOT COMPLETE: PlanFact returned no operations.")
+        print(f"Approximately 126 already-posted invoices are expected to exist.")
+        print("No schema changes were made and no invoices were marked. "
+              "The cron poster (scripts/post_to_planfact.py) must NOT be "
+              "allowed to run until this reconcile completes successfully "
+              "— otherwise it will treat every already-posted historical "
+              "invoice as new and create duplicates in PlanFact.")
+        return 2
+
     if not ensure_columns(engine, apply_changes):
         print("\nRun again with --apply to add the columns first.")
         return 1
