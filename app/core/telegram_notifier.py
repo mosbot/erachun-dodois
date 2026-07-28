@@ -136,3 +136,35 @@ def send_invoice_notification(
     except Exception as e:  # pragma: no cover — defensive
         logger.exception("Unexpected Telegram notification error")
         return False, str(e)
+
+
+def send_alert(bot_token: str, chat_id, text: str,
+               topic_id: Optional[int] = None,
+               timeout: float = 15.0) -> tuple[bool, Optional[str]]:
+    """Send a plain text alert. Best-effort, like the invoice notifier.
+
+    Separate from send_invoice_notification because that one always signs off
+    with a Dodois success caption, which is the wrong thing to say about a
+    failure.
+    """
+    if not bot_token:
+        return False, "bot_token is empty"
+    if not chat_id:
+        return False, "chat_id is empty"
+
+    try:
+        data = {"chat_id": str(chat_id), "text": text}
+        if topic_id is not None:
+            data["message_thread_id"] = str(topic_id)
+        resp = requests.post(
+            f"{TELEGRAM_API_BASE}/bot{bot_token}/sendMessage",
+            data=data, timeout=timeout)
+        if resp.status_code != 200:
+            return False, f"Telegram API {resp.status_code}: {resp.text[:200]}"
+        body = resp.json()
+        if not body.get("ok"):
+            return False, f"Telegram API error: {body.get('description', 'unknown')}"
+        return True, None
+    except requests.RequestException as e:
+        logger.warning("Telegram alert failed: %s", e)
+        return False, str(e)

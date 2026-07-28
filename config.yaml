@@ -241,6 +241,16 @@ planfact:
       oib: "48879371584"
       exclude_series: []
 
+# Telegram
+telegram:
+  bot_token: ""          # real value lives in config.local.yaml
+  # Integration failures go to the admin's own chat — one recipient, not the
+  # per-pizzeria topics used for upload notifications. Restaurant staff cannot
+  # act on a PlanFact error. Without this set, failures are only visible in the
+  # log and in the invoice detail panel.
+  alerts_chat_id: ""
+  alerts_topic_id: ""
+
 # Database
 database:
   url: "postgresql://eracun:eracun_secret@postgres:5432/e_rachun_dodois"

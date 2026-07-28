@@ -197,3 +197,38 @@ def test_empty_chat_id_is_rejected():
         invoice_number="I", total_with_vat=1.0, pdf_bytes=None,
     )
     assert ok is False
+
+
+from unittest.mock import patch
+
+from app.core.telegram_notifier import send_alert
+
+
+def test_send_alert_posts_text_to_the_topic():
+    with patch("app.core.telegram_notifier.requests.post") as post:
+        post.return_value.status_code = 200
+        post.return_value.json.return_value = {"ok": True}
+        ok, err = send_alert("tok", 123, "PlanFact failed", topic_id=7)
+
+    assert (ok, err) == (True, None)
+    url, kwargs = post.call_args[0][0], post.call_args[1]
+    assert url.endswith("/bottok/sendMessage")
+    assert kwargs["data"]["chat_id"] == "123"
+    assert kwargs["data"]["text"] == "PlanFact failed"
+    assert kwargs["data"]["message_thread_id"] == "7"
+
+
+def test_send_alert_reports_api_error():
+    with patch("app.core.telegram_notifier.requests.post") as post:
+        post.return_value.status_code = 200
+        post.return_value.json.return_value = {"ok": False,
+                                               "description": "chat not found"}
+        ok, err = send_alert("tok", 123, "x")
+
+    assert ok is False
+    assert "chat not found" in err
+
+
+def test_send_alert_requires_a_chat():
+    ok, err = send_alert("tok", None, "x")
+    assert ok is False

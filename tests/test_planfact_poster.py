@@ -284,3 +284,19 @@ def test_validate_invoice_checks_vat_category_configured():
     }
     issues = validate_invoice(cfg_no_vat, _inv(), "wolt", "90247-2553198637711-2026")
     assert any("vat" in i.lower() for i in issues)
+
+
+from app.core.planfact_poster import should_notify
+
+
+def test_notify_on_first_failure():
+    assert should_notify(None, "boom") is True
+
+
+def test_do_not_notify_on_repeated_identical_failure():
+    """The job runs every 30 minutes; the same error must not spam Telegram."""
+    assert should_notify("boom", "boom") is False
+
+
+def test_notify_when_the_failure_changes():
+    assert should_notify("boom", "different boom") is True

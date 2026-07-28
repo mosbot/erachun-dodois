@@ -224,3 +224,12 @@ def post_invoice(client, cfg: dict, invoice: Invoice, xml_text: str,
     except Exception as exc:
         logger.exception("Unexpected error posting invoice %s", invoice.invoice_number)
         return None, f"Unexpected error: {exc}"
+
+
+def should_notify(previous_error: Optional[str], new_error: str) -> bool:
+    """Notify only when a failure is new or has changed.
+
+    The poster runs every 30 minutes and a failing invoice stays in the queue,
+    so notifying every time would send the same message 48 times a day.
+    """
+    return (previous_error or "") != (new_error or "")
