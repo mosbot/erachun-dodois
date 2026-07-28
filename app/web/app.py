@@ -480,6 +480,30 @@ def _delete_invoice(inv: Invoice, storage: dict):
     st.success(f"Invoice {inv.invoice_number} deleted.")
 
 
+def _render_planfact_status(inv: Invoice):
+    """Show whether the invoice reached PlanFact. Read-only — posting is automatic."""
+    cfg = get_config()
+    pf = cfg.get("planfact", {}) or {}
+    if not pf.get("enabled"):
+        return
+    provider_oibs = {str((c or {}).get("oib", ""))
+                     for c in (pf.get("providers") or {}).values()}
+    if (inv.sender_oib or "") not in provider_oibs:
+        return
+
+    st.divider()
+    st.markdown("**PlanFact**")
+    if inv.planfact_operation_id:
+        posted = (inv.planfact_posted_at.strftime("%d.%m.%Y %H:%M")
+                  if inv.planfact_posted_at else "—")
+        st.markdown(
+            f"✅ Posted · operation `{inv.planfact_operation_id}` · {posted}")
+    elif inv.planfact_error:
+        st.markdown(f"❌ Not posted — {inv.planfact_error}")
+    else:
+        st.markdown("⏳ Queued — will be posted on the next sync")
+
+
 def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
     """Render Dodois upload section inside invoice detail (left column).
 
@@ -774,6 +798,9 @@ def render_invoice_detail(inv: Invoice, session):
                     st.download_button("⬇ XML", data=xml_full.read_bytes(),
                                        file_name=inv.xml_path, mime="application/xml",
                                        use_container_width=True)
+
+        # PlanFact status
+        _render_planfact_status(inv)
 
         # Dodois upload block
         render_dodois_upload_block(inv, session, cfg)
