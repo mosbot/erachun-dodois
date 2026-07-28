@@ -52,7 +52,8 @@ def main(apply_changes: bool) -> int:
             continue
 
         try:
-            ubl = parse_ubl_xml(xml_path.read_text(encoding="utf-8"))
+            ubl = parse_ubl_xml(xml_path.read_text(encoding="utf-8"),
+                                cfg.get("pizzeria_detection"))
         except Exception as e:
             parse_errors += 1
             print(f"  ! parse failed for {inv.invoice_number} ({inv.xml_path}): {e}")

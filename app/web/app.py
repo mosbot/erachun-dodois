@@ -574,7 +574,8 @@ def render_dodois_upload_block(inv: Invoice, session, cfg: dict):
         return
 
     try:
-        ubl = parse_ubl_xml(xml_file.read_text(encoding="utf-8"))
+        ubl = parse_ubl_xml(xml_file.read_text(encoding="utf-8"),
+                            cfg.get("pizzeria_detection"))
     except Exception as e:
         st.error(f"XML parse error: {e}")
         return
@@ -862,7 +863,9 @@ def _invoice_vat_breakdown(inv_id: int, xml_full_path: str, mtime: float,
     p = Path(xml_full_path)
     if xml_full_path and p.exists():
         try:
-            ubl = parse_ubl_xml(p.read_text(encoding="utf-8"))
+            cfg = get_config()
+            ubl = parse_ubl_xml(p.read_text(encoding="utf-8"),
+                                cfg.get("pizzeria_detection"))
             if ubl.tax_subtotals:
                 return [
                     {"percent": s["percent"], "taxable": s["taxable"], "tax": s["tax"]}
@@ -1113,7 +1116,7 @@ def render_upload_page():
             st.markdown(f"**Processing:** {f.name}")
             try:
                 xml_content = f.read().decode("utf-8", errors="replace")
-                ubl = parse_ubl_xml(xml_content)
+                ubl = parse_ubl_xml(xml_content, cfg.get("pizzeria_detection"))
 
                 # Check duplicate (ignore deleted invoices)
                 existing = (
