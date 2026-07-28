@@ -22,8 +22,37 @@ CFG = {
     }
 }
 
-GLOVO_XML = ('<Invoice><Item><Name>Glovo provizija P705447 '
-             'račun broj: 47262-1-5-2026</Name></Item></Invoice>')
+INV_NS = (
+    'xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" '
+    'xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:'
+    'CommonAggregateComponents-2" '
+    'xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:'
+    'CommonBasicComponents-2"'
+)
+CN_NS = (
+    'xmlns="urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2" '
+    'xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:'
+    'CommonAggregateComponents-2" '
+    'xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:'
+    'CommonBasicComponents-2"'
+)
+
+
+def _glovo_xml(line_name="Glovo provizija P705447 račun broj: 47262-1-5-2026",
+              note=""):
+    """A minimal UBL Invoice with one line item, in the style of the
+    credit-note fixtures in test_ubl_parser.py."""
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Invoice {INV_NS}>
+  <cbc:Note>{note}</cbc:Note>
+  <cac:InvoiceLine>
+    <cbc:ID>1</cbc:ID>
+    <cac:Item><cbc:Name>{line_name}</cbc:Name></cac:Item>
+  </cac:InvoiceLine>
+</Invoice>"""
+
+
+GLOVO_XML = _glovo_xml()
 
 
 def _inv(**kw):
@@ -59,6 +88,61 @@ def test_external_id_for_glovo_comes_from_the_line_item():
 def test_external_id_for_glovo_is_none_when_absent():
     inv = _inv(sender_oib="48879371584", invoice_number="361960/G1/2234278")
     assert extract_external_id("glovo", inv, "<Invoice/>") is None
+
+
+# ── I3: the match key regex must not accept arbitrary digits-and-dashes ────
+# Verified wrong captures from the loose [\d\-]+ pattern, searched over the
+# whole document: payment boilerplate in cbc:Note / cac:PaymentMeans
+# precedes cac:InvoiceLine in UBL document order and used to win the search.
+
+def test_glovo_external_id_rejects_payment_boilerplate_two_groups():
+    """'Placanje na racun broj: 2360000-1101234567' has only two numeric
+    groups, not the four PlanFact's number actually has."""
+    xml = _glovo_xml(line_name="Placanje na racun broj: 2360000-1101234567")
+    assert extract_external_id("glovo", _inv(), xml) is None
+
+
+def test_glovo_external_id_rejects_boilerplate_with_no_dashes():
+    xml = _glovo_xml(line_name="racun broj: 2653343")
+    assert extract_external_id("glovo", _inv(), xml) is None
+
+
+def test_glovo_external_id_rejects_boilerplate_bare_dash():
+    xml = _glovo_xml(line_name="račun broj: -")
+    assert extract_external_id("glovo", _inv(), xml) is None
+
+
+def test_glovo_external_id_accepts_the_genuine_four_group_shape():
+    """Positive control: the real PlanFact number shape must still match
+    after tightening the regex."""
+    xml = _glovo_xml(
+        line_name="Glovo provizija P705447 račun broj: 47284-1-5-2026")
+    assert extract_external_id("glovo", _inv(), xml) == "47284-1-5-2026"
+
+
+def test_glovo_external_id_ignores_note_even_with_four_group_shape():
+    """Scope restriction is independent of the shape restriction: a Note
+    that happens to have four dash-separated groups must still lose to the
+    real line item, because only line items are searched at all."""
+    xml = _glovo_xml(note="Uplata na racun broj: 1234-56-78-9012")
+    assert extract_external_id("glovo", _inv(), xml) == "47262-1-5-2026"
+
+
+def test_glovo_external_id_found_in_credit_note_line_item():
+    """cac:CreditNoteLine is the CreditNote equivalent of cac:InvoiceLine
+    and must be searched too."""
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<CreditNote {CN_NS}>
+  <cac:CreditNoteLine>
+    <cbc:ID>1</cbc:ID>
+    <cac:Item><cbc:Name>Glovo provizija P705447 račun broj: 47262-1-5-2026</cbc:Name></cac:Item>
+  </cac:CreditNoteLine>
+</CreditNote>"""
+    assert extract_external_id("glovo", _inv(), xml) == "47262-1-5-2026"
+
+
+def test_glovo_external_id_none_for_unparseable_xml():
+    assert extract_external_id("glovo", _inv(), "not xml at all <<<") is None
 
 
 def test_valid_invoice_has_no_issues():
@@ -176,20 +260,26 @@ def test_post_invoice_skips_when_already_in_planfact():
     client = MagicMock()
     client.list_operations.return_value = [
         {"operationId": 999, "externalId": "90247-2553198637711-2026"}]
-    op_id, err = post_invoice(client, CFG, _inv(), "")
+    inv = _inv()
+    op_id, err = post_invoice(client, CFG, inv, "")
     assert op_id == "999"
     assert err is None
     client.create_outcome.assert_not_called()
+    # M1: the match key is stored alongside the operation id, not just by
+    # the reconcile script.
+    assert inv.planfact_external_id == "90247-2553198637711-2026"
 
 
 def test_post_invoice_creates_and_returns_id():
     client = MagicMock()
     client.list_operations.return_value = []
     client.create_outcome.return_value = {"data": {"operationId": 555}}
-    op_id, err = post_invoice(client, CFG, _inv(), "")
+    inv = _inv()
+    op_id, err = post_invoice(client, CFG, inv, "")
     assert op_id == "555"
     assert err is None
     client.create_outcome.assert_called_once()
+    assert inv.planfact_external_id == "90247-2553198637711-2026"
 
 
 def test_post_invoice_falls_back_to_lookup_on_empty_body():
@@ -200,26 +290,34 @@ def test_post_invoice_falls_back_to_lookup_on_empty_body():
         [{"operationId": 777, "externalId": "90247-2553198637711-2026"}],
     ]
     client.create_outcome.return_value = {}
-    op_id, err = post_invoice(client, CFG, _inv(), "")
+    inv = _inv()
+    op_id, err = post_invoice(client, CFG, inv, "")
     assert op_id == "777"
     assert err is None
+    assert inv.planfact_external_id == "90247-2553198637711-2026"
 
 
 def test_post_invoice_reports_validation_failure():
     client = MagicMock()
-    op_id, err = post_invoice(client, CFG, _inv(dodois_pizzeria=None), "")
+    inv = _inv(dodois_pizzeria=None)
+    op_id, err = post_invoice(client, CFG, inv, "")
     assert op_id is None
     assert "pizzeria" in err.lower()
     client.create_outcome.assert_not_called()
+    # A blocked invoice never got an operation id, so the match key must
+    # not be stamped either.
+    assert inv.planfact_external_id is None
 
 
 def test_dry_run_never_posts():
     client = MagicMock()
     client.list_operations.return_value = []
-    op_id, err = post_invoice(client, CFG, _inv(), "", dry_run=True)
+    inv = _inv()
+    op_id, err = post_invoice(client, CFG, inv, "", dry_run=True)
     assert op_id is None
     assert err is None
     client.create_outcome.assert_not_called()
+    assert inv.planfact_external_id is None
 
 
 def test_post_invoice_catches_planfact_error_from_list_operations():

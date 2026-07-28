@@ -10,15 +10,58 @@ import re
 from datetime import timedelta
 from typing import Optional
 
+from lxml import etree
+
 from app.core.planfact_client import PlanfactError
 from app.db.models import Invoice
 
 logger = logging.getLogger(__name__)
 
-# "Glovo provizija P705447 račun broj: 47284-1-5-2026"
-_GLOVO_INNER_NUMBER = re.compile(r"ra[čc]un\s+broj[:\s]+([\d\-]+)", re.IGNORECASE)
+# "Glovo provizija P705447 račun broj: 47284-1-5-2026" — require the shape
+# PlanFact's number actually has (four numeric groups joined by dashes),
+# not just any digits and dashes. The looser [\d\-]+ also captured payment
+# boilerplate like "Placanje na racun broj: 2360000-1101234567" or
+# "racun broj: -" wherever it appeared in the document. See finding I3.
+_GLOVO_INNER_NUMBER = re.compile(
+    r"RA[ČC]UN\s+BROJ[:\s]+(\d+-\d+-\d+-\d+)", re.IGNORECASE)
+
+_LINE_ITEM_NS = {
+    "cac": "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
+    "cbc": "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
+}
 
 _CENT = 0.01
+
+
+def _line_item_names(xml_text: str) -> list:
+    """Text of every line-item name in the document.
+
+    cbc:Note and cac:PaymentMeans precede cac:InvoiceLine in UBL document
+    order and routinely carry payment boilerplate ("uplata na racun broj:
+    …"), which is exactly what won the old whole-document regex search.
+    Restricting the search to line items (cac:InvoiceLine, and
+    cac:CreditNoteLine for the credit-note document shape) is the other
+    half of the finding I3 fix — the tightened regex alone is not enough,
+    since boilerplate could coincidentally have four dash-separated groups.
+
+    Returns [] on any parse failure rather than raising — a document that
+    cannot be parsed simply yields no match, which is the fail-safe
+    behaviour extract_external_id already relies on.
+    """
+    if not xml_text:
+        return []
+    raw = xml_text.encode("utf-8") if isinstance(xml_text, str) else xml_text
+    try:
+        root = etree.fromstring(raw)
+    except etree.XMLSyntaxError:
+        return []
+    names = []
+    for xpath in (".//cac:InvoiceLine/cac:Item/cbc:Name",
+                  ".//cac:CreditNoteLine/cac:Item/cbc:Name"):
+        for el in root.findall(xpath, _LINE_ITEM_NS):
+            if el.text:
+                names.append(el.text)
+    return names
 
 
 def _planfact_cfg(cfg: dict) -> dict:
@@ -41,13 +84,17 @@ def extract_external_id(provider: str, invoice: Invoice,
 
     Wolt uses the same number in both systems. Glovo does not: eRačun calls it
     ``2653343/G1/2234278`` while PlanFact holds ``47262-1-5-2026``, which the
-    XML carries inside the line item name.
+    XML carries inside a line item name — and only there; searching the
+    whole document risks matching unrelated payment boilerplate (finding I3).
     """
     if provider == "wolt":
         return (invoice.invoice_number or "").strip() or None
     if provider == "glovo":
-        m = _GLOVO_INNER_NUMBER.search(xml_text or "")
-        return m.group(1) if m else None
+        for name in _line_item_names(xml_text):
+            m = _GLOVO_INNER_NUMBER.search(name)
+            if m:
+                return m.group(1)
+        return None
     return None
 
 
@@ -188,6 +235,12 @@ def post_invoice(client, cfg: dict, invoice: Invoice, xml_text: str,
 
     (None, None) means the invoice was validated but nothing was sent because
     this is a dry run.
+
+    Whenever an operation id is returned (found already posted, freshly
+    created, or found via the empty-body fallback lookup), ``invoice`` is
+    mutated in place to set ``planfact_external_id`` alongside it — this is
+    the match key the spec calls "computed once, stored" (finding M1); the
+    caller still owns the session/commit.
     """
     provider = resolve_provider(cfg, invoice)
     external_id = extract_external_id(provider, invoice, xml_text) if provider else None
@@ -201,6 +254,7 @@ def post_invoice(client, cfg: dict, invoice: Invoice, xml_text: str,
         if existing:
             logger.info("Invoice %s already in PlanFact as operation %s",
                         invoice.invoice_number, existing)
+            invoice.planfact_external_id = external_id
             return existing, None
 
         if dry_run:
@@ -210,12 +264,14 @@ def post_invoice(client, cfg: dict, invoice: Invoice, xml_text: str,
         response = client.create_outcome(payload)
         op_id = ((response or {}).get("data") or {}).get("operationId")
         if op_id:
+            invoice.planfact_external_id = external_id
             return str(op_id), None
 
         # Empty or unexpected body: the operation may still have been created.
         # Look it up rather than risk posting it twice.
         found = find_existing_operation(client, cfg, invoice, provider, external_id)
         if found:
+            invoice.planfact_external_id = external_id
             return found, None
         return None, "PlanFact returned no operation id and none was found afterwards"
 
